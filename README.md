@@ -1,122 +1,139 @@
-# Pediatric Eye Disease Detector
+# AMD Detection System - Qt C++ GUI
 
-Initial project setup for developing a deep learning system to detect pediatric eye disorders from medical images in DICOM format.
+## 📌 Overview
 
----
+This project implements a lightweight Graphical User Interface (GUI) for the detection of **Age-Related Macular Degeneration (AMD)** using retinal fundus images.
 
-## About the Project (INITIAL PROJECT OVERLAY)
+The GUI is developed using **Qt Framework in C++** and is designed to interact with a deep learning-based Python backend that performs AMD classification and generates Class Activation Mapping (CAMS) visualizations.
 
-This project aims to build a diagnostic support tool that uses deep learning to analyze pediatric ophthalmic images such as:
-
-- Fundus photographs  
-- OCT scans  
-- Slit-lamp images  
-
-The goal is early detection of eye diseases in children to assist ophthalmologists and improve screening in resource-limited settings.
+The system allows clinicians or users to upload fundus images captured from fundus cameras and visualize diagnostic outputs in an intuitive interface.
 
 ---
 
-## Target Diseases
+## 🎯 Features
 
-The system is planned to focus on the following pediatric ocular conditions:
-
-- Retinopathy of Prematurity (ROP)  
-- Congenital Cataract  
-- Pediatric Glaucoma  
-- Retinoblastoma  
-- Coats Disease  
-- Strabismus related abnormalities  
-- Refractive error indications
-
----
-
-## Planned Methodology
-
-1. Read and preprocess DICOM images  
-2. Image normalization and resizing  
-3. Train deep learning models (CNN / Transformer)  
-4. Combine image features with metadata  
-   - age  
-   - gender  
-   - eye laterality  
-5. Explain model decisions using Grad-CAM  
-6. Evaluate using medical metrics  
-   - accuracy  
-   - sensitivity  
-   - specificity  
-   - AUC score
+- Upload retinal fundus images from local system
+- Enter patient name for identification
+- Display original fundus image
+- Display CAMS heatmap image (affected retinal regions)
+- View predicted diagnosis:
+  - Treatable AMD
+  - Non-Treatable AMD
+  - Normal Eye
+- Fundus Image History panel for tracking previous scans
+- Lightweight and responsive Qt-based GUI
 
 ---
 
-## Data Management Plan
+## 🧩 System Architecture
 
-Proposed project structure:
-
-pediatric-eye-disease-detector/
-│
-├── data/          # DICOM images and labels  
-├── src/           # model and scripts  
-├── notebooks/     # experiments  
-├── docs/          # articles and notes  
-└── README.md
-
-- All images will follow DICOM standard  
-- Labels will be stored separately  
-- Metadata will be mapped using patient ID  
-- No personal identifiers will be stored
+```text
+Qt C++ GUI
+   ↓
+Upload Fundus Image
+   ↓
+Python Backend (DL Model)
+   ↓
+Diagnosis + CAMS Output
+   ↓
+Displayed on GUI
+```
 
 ---
 
-## Articles Used and Inspiration
+## 🖥️ GUI Components
 
-This project is guided by research works on:
-
-- AI based early detection of pediatric eye diseases  
-- Deep learning screening using ocular images  
-- Explainable AI in ophthalmology  
-- Clinical evaluation of medical AI systems  
-
-Major reference:
-
-- JAMA Network Open article on AI for early detection of pediatric eye diseases  
-- Related IEEE and ophthalmology deep learning studies  
-- DICOM medical imaging guidelines
-
-(Detailed citations will be added later)
+| Component | Description |
+|-----------|-------------|
+| Patient Name | Input field for patient details |
+| Upload Button | Upload fundus image |
+| Fundus Panel | Displays original scan |
+| CAMS Panel | Displays heatmap output |
+| Diagnosis Label | Displays AMD classification |
+| History Panel | Displays previous fundus scans |
 
 ---
 
-## Tools and Technologies
+## ⚙️ Installation (Ubuntu)
 
-- Python  
-- PyTorch / TensorFlow  
-- pydicom  
-- OpenCV  
-- NumPy, Pandas  
-- Grad-CAM  
-- Jupyter Notebook
+Install Qt:
+
+```bash
+sudo apt install qtbase5-dev
+```
+
+Compile the GUI:
+
+```bash
+g++ main.cpp -o amd_gui `pkg-config --cflags --libs Qt5Widgets`
+```
+
+Run the application:
+
+```bash
+./amd_gui
+```
+
+---
+
+## 🔗 Backend Integration
+
+The GUI communicates with the Python backend through file-based inter-process communication (IPC):
+
+1. C++ GUI sends fundus image path to Python backend
+2. Python performs AMD classification
+3. Python generates CAMS output
+4. Diagnosis and CAMS image path are returned to GUI
+5. Results displayed to the user
 
 ---
 
-## Current Status
+## 🧠 Technologies Used
 
-- [ ] Literature study  
-- [ ] Dataset preparation  
-- [ ] DICOM loader implementation  
-- [ ] Baseline model  
-- [ ] Explainability module  
-- [ ] Documentation
+- C++
+- Qt Framework
+- Python (Backend)
+- Deep Learning Model
+- SQLite Database (Backend)
+
+---
+
+## 📌 Use Case
+
+This system can be used as a clinical decision-support tool for the screening and monitoring of Age-Related Macular Degeneration using retinal fundus imaging.
 
 ---
 
-## Notes
+## 🧾 Problem Statement
 
-This is an initial README and will be updated with:
-
-- Dataset details  
-- Model architecture  
-- Results  
-- Usage instructions  
-- Screenshots
+Age-Related Macular Degeneration is one of the leading causes of vision loss in older adults, and early screening is critical for timely intervention. Manual interpretation of fundus images can be time-consuming and dependent on specialist availability. This project addresses the need for a lightweight diagnostic support interface that connects clinicians to AI-assisted AMD detection and interpretable CAMS visualizations.
 
 ---
+
+## 🎯 Objectives
+
+- Build a user-friendly Qt C++ GUI for AMD screening workflows
+- Integrate the GUI with a Python deep learning backend
+- Provide clear diagnostic output (Treatable AMD / Non-Treatable AMD / Normal Eye)
+- Visualize lesion-relevant regions using CAMS heatmaps
+- Maintain scan history for quick review and comparison
+- Support efficient clinical decision-making with minimal UI complexity
+
+---
+
+## 🧪 Methodology
+
+1. Acquire retinal fundus image from user input
+2. Collect patient identifier (name) from GUI
+3. Send image path from Qt GUI to backend via file-based IPC
+4. Preprocess image and run deep learning inference in Python
+5. Generate classification result and CAMS heatmap
+6. Return output paths/results to GUI
+7. Render original image, CAMS image, diagnosis, and history in the interface
+
+---
+
+## 📜 License
+
+Academic Project for Analysis
+
