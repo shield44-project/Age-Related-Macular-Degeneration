@@ -21,6 +21,7 @@ The system allows clinicians or users to upload fundus images captured from fund
   - Non-Treatable AMD
   - Normal Eye
 - Fundus Image History panel for tracking previous scans
+- **Light/Dark Mode Toggle** with persistent theme preference
 - Lightweight and responsive Qt-based GUI
 
 ---
@@ -47,6 +48,7 @@ Displayed on GUI
 |-----------|-------------|
 | Patient Name | Input field for patient details |
 | Upload Button | Upload fundus image |
+| Theme Toggle Button | Switch between light and dark mode (🌙/☀️) |
 | Fundus Panel | Displays original scan |
 | CAMS Panel | Displays heatmap output |
 | Diagnosis Label | Displays AMD classification |
@@ -54,23 +56,46 @@ Displayed on GUI
 
 ---
 
-## ⚙️ Installation (Ubuntu)
+## ⚙️ Building with CMake (Recommended)
 
-Install Qt:
+### Prerequisites
+- Qt5 development libraries
+- CMake (version 3.16 or higher)
+- C++17/20 compatible compiler
 
+### Build Steps (Ubuntu/Linux)
+
+Check CMakeLists.txt and verify ur cmake version matches or not (To know your cmake version go to your terminal and type cmake --version)
+
+Install dependencies:
 ```bash
-sudo apt install qtbase5-dev
+sudo apt install qtbase5-dev cmake build-essential
 ```
 
-Compile the GUI:
-
+Build the project(Make sure to name the project AMD_GUI):
 ```bash
-g++ -fPIC src/main.cpp -o build/amd_gui `pkg-config --cflags --libs Qt5Widgets`
+mkdir build
+cd build
+cmake ..
+make
 ```
 
 Run the application:
+```bash
+./bin/AMD_GUI
+```
+
+### Theme Persistence
+The application automatically saves your theme preference using Qt's QSettings. Your chosen mode (light/dark) will be restored when you restart the application.
+
+---
+
+## ⚙️ Alternative: Direct Compilation
+
+If you prefer not to use CMake, you can compile directly:
 
 ```bash
+g++ -fPIC src/main.cpp -o build/amd_gui `pkg-config --cflags --libs Qt5Widgets` -std=c++17
 ./build/amd_gui
 ```
 
