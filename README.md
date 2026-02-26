@@ -65,13 +65,13 @@ sudo apt install qtbase5-dev
 Compile the GUI:
 
 ```bash
-g++ main.cpp -o amd_gui `pkg-config --cflags --libs Qt5Widgets`
+g++ -fPIC src/main.cpp -o build/amd_gui `pkg-config --cflags --libs Qt5Widgets`
 ```
 
 Run the application:
 
 ```bash
-./amd_gui
+./build/amd_gui
 ```
 
 ---
