@@ -4,6 +4,10 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
+
+###IMAGE PREPROCESSING###
+
+
 CLASS_NAMES = ["Normal Eye", "Treatable AMD", "Non-Treatable AMD"]
 IMAGE_SIZE = (224, 224)
 DEFAULT_MODEL_PATH = Path("backend/models/amd_model.keras")
