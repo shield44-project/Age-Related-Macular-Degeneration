@@ -3,7 +3,7 @@
 ## Overview
 
 This backend provides a Flask API for AMD image prediction.
-It currently supports a dummy Keras model for development and can automatically switch to a real trained model when available.
+It currently supports a dummy PyTorch model for development and can automatically switch to a real trained model when available.
 
 Main endpoint:
 - POST /predict
@@ -28,7 +28,7 @@ Model selection is handled in backend/dl_model.py.
 
 Priority order:
 1. Use MODEL_PATH environment variable if provided.
-2. Else use default path: backend/models/amd_model.keras
+2. Else use default path: backend/models/amd_model.pt
 3. If model loading fails or file is missing, use dummy model.
 
 Response field model_type tells which one is active:
@@ -120,12 +120,12 @@ curl -X POST http://localhost:5000/predict \
 ## Add a Real Model Later
 
 Option 1:
-- Place trained model at backend/models/amd_model.keras
+- Place trained model at backend/models/amd_model.pt
 
 Option 2:
 - Set environment variable MODEL_PATH to your model location:
 
-MODEL_PATH=/absolute/path/to/model.keras python backend/backend.py
+MODEL_PATH=/absolute/path/to/model.pt python backend/backend.py
 
 ## Notes
 

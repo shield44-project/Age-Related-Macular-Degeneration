@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
+import torch
+from torch import nn
 
 
 ###IMAGE PREPROCESSING###
@@ -10,19 +11,24 @@ import tensorflow as tf
 
 CLASS_NAMES = ["Normal Eye", "Treatable AMD", "Non-Treatable AMD"]
 IMAGE_SIZE = (224, 224)
-DEFAULT_MODEL_PATH = Path("backend/models/amd_model.keras")
+DEFAULT_MODEL_PATH = Path("backend/models/amd_model.pt")
 
 
-def build_dummy_model() -> tf.keras.Model:
-    tf.random.set_seed(42)
-    model = tf.keras.Sequential(
-        [
-            tf.keras.layers.Input(shape=(224, 224, 3)),
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(len(CLASS_NAMES), activation="softmax"),
-        ]
-    )
-    return model
+class DummyAMDModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(3 * 224 * 224, len(CLASS_NAMES)),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.classifier(x)
+
+
+def build_dummy_model() -> nn.Module:
+    torch.manual_seed(42)
+    return DummyAMDModel()
 
 
 def resolve_model_path() -> Path:
@@ -32,21 +38,48 @@ def resolve_model_path() -> Path:
     return DEFAULT_MODEL_PATH
 
 
-def load_model_with_fallback() -> tuple[tf.keras.Model, str]:
+def _load_pytorch_model(model_path: Path) -> nn.Module:
+    try:
+        model = torch.jit.load(str(model_path), map_location="cpu")
+        return model.eval()
+    except Exception:
+        pass
+
+    loaded = torch.load(model_path, map_location="cpu")
+    if isinstance(loaded, nn.Module):
+        return loaded.eval()
+
+    raise ValueError(
+        "Unsupported model format. Provide a TorchScript module or a saved nn.Module."
+    )
+
+
+def load_model_with_fallback() -> tuple[nn.Module, str]:
     model_path = resolve_model_path()
 
     if model_path.exists() and model_path.is_file():
         try:
-            model = tf.keras.models.load_model(model_path)
+            model = _load_pytorch_model(model_path)
             return model, "real"
         except Exception:
             pass
 
-    return build_dummy_model(), "dummy"
+    return build_dummy_model().eval(), "dummy"
 
 
 MODEL, MODEL_TYPE = load_model_with_fallback()
 
 
 def predict_probabilities(input_tensor: np.ndarray) -> np.ndarray:
-    return MODEL.predict(input_tensor, verbose=0)[0]
+    with torch.no_grad():
+        tensor = torch.as_tensor(input_tensor, dtype=torch.float32)
+        output = MODEL(tensor)
+
+        if isinstance(output, (tuple, list)):
+            output = output[0]
+
+        if output.ndim == 1:
+            output = output.unsqueeze(0)
+
+        probs = torch.softmax(output, dim=1)
+        return probs[0].cpu().numpy()

@@ -11,4 +11,3 @@ pillow
 grad-cam
 albumentations
 Flask
-tensorflow
