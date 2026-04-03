@@ -1,1 +1,0 @@
-LINK: https://www.kaggle.com/datasets/tejaswibteggihalli/vit-base-weights?select=ViT_base.pth
