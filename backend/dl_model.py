@@ -6,6 +6,27 @@ import torch
 from torch import nn
 
 
+class ViTBinaryClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.backbone = timm.create_model(
+            "vit_base_patch16_224",
+            pretrained=False,
+            num_classes=0,
+        )
+        self.head = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(768, 256),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        features = self.backbone(x)
+        return self.head(features)
+
 ###IMAGE PREPROCESSING###
 
 
