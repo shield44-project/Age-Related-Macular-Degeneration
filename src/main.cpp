@@ -290,11 +290,23 @@ public:
 
             if (reply->error() != QNetworkReply::NoError) {
                 diagnosisLabel->setText("Diagnosis: Request failed");
+
+                QString backendDetail;
+                QJsonParseError err;
+                const QJsonDocument errorDoc = QJsonDocument::fromJson(responseBody, &err);
+                if (err.error == QJsonParseError::NoError && errorDoc.isObject()) {
+                    backendDetail = errorDoc.object().value("error").toString();
+                }
+
+                const QString details = backendDetail.isEmpty()
+                    ? reply->errorString()
+                    : backendDetail;
+
                 QMessageBox::warning(
                     this,
                     "Backend Error",
                     "Could not reach backend at http://127.0.0.1:5000.\n\n"
-                    "Details: " + reply->errorString()
+                    "Details: " + details
                 );
                 reply->deleteLater();
                 return;

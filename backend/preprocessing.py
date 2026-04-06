@@ -1,5 +1,7 @@
+import io
 import numpy as np
 import cv2
+from PIL import Image
 
 IMAGE_SIZE = (224, 224)
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -10,7 +12,13 @@ def decode_image_bytes(image_bytes: bytes) -> np.ndarray:
     nparr = np.frombuffer(image_bytes, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if image is None:
-        raise ValueError("Failed to decode image bytes.")
+        # Fallback for image variants OpenCV occasionally fails to decode.
+        try:
+            pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            rgb = np.asarray(pil_img, dtype=np.uint8)
+            image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        except Exception as exc:
+            raise ValueError(f"Failed to decode image bytes: {exc}") from exc
     return image
 
 
