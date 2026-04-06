@@ -13,7 +13,14 @@ IMAGE_SIZE = (224, 224)
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 DEFAULT_MODEL_PATH = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model.pth"
+DEFAULT_MODEL_PATH_2 = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model_2.pth"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MAX_MODELS = 2
+BACKUP_MODEL_TYPE = "backup"
+
+
+def _force_backup_mode() -> bool:
+    return os.getenv("FORCE_BACKUP_MODE", "0") == "1"
 
 
 class ViTBinaryClassifier(nn.Module):
@@ -39,6 +46,9 @@ class ViTBinaryClassifier(nn.Module):
 
 
 def candidate_model_paths() -> list[Path]:
+    if _force_backup_mode():
+        return []
+
     candidates: list[Path] = []
     models_root = PACKAGE_DIR / "models"
 
@@ -59,12 +69,11 @@ def candidate_model_paths() -> list[Path]:
             remapped.extend(sorted(models_root.rglob(path.name)))
         return remapped
 
-    model_path = os.getenv("MODEL_PATH")
-    if model_path:
-        raw = Path(model_path).expanduser()
+    def collect_from_configured_path(path_value: str) -> None:
+        raw = Path(path_value).expanduser()
         resolved = raw if raw.is_absolute() else (PROJECT_ROOT / raw).resolve()
 
-        # Allow MODEL_PATH to be a direct file, directory, or glob expression.
+        # Allow configured path to be a direct file, directory, or glob expression.
         if any(ch in str(resolved) for ch in ("*", "?", "[")):
             for match in sorted(PROJECT_ROOT.glob(str(raw))):
                 add_if_present(match)
@@ -78,7 +87,23 @@ def candidate_model_paths() -> list[Path]:
                 for match in remap_stale_absolute(resolved):
                     add_if_present(match)
 
+    model_path = os.getenv("MODEL_PATH")
+    if model_path:
+        collect_from_configured_path(model_path)
+
+    model_path_2 = os.getenv("MODEL_PATH_2")
+    if model_path_2:
+        collect_from_configured_path(model_path_2)
+
+    model_paths = os.getenv("MODEL_PATHS", "")
+    if model_paths:
+        for entry in model_paths.split(","):
+            entry = entry.strip()
+            if entry:
+                collect_from_configured_path(entry)
+
     add_if_present(DEFAULT_MODEL_PATH)
+    add_if_present(DEFAULT_MODEL_PATH_2)
 
     # Additional common roots for portability.
     for root in (PROJECT_ROOT / "backend" / "models", PROJECT_ROOT / "models", Path.cwd() / "backend" / "models"):
@@ -112,7 +137,23 @@ def candidate_model_paths() -> list[Path]:
 
 
 def _load_state_dict(model_path: Path) -> dict[str, torch.Tensor]:
-    checkpoint = torch.load(model_path, map_location="cpu")
+    def torch_load_checkpoint(path: Path):
+        # PyTorch 2.6 changed default weights_only=True. Try safe mode first,
+        # then trusted full-load mode for older full-checkpoint files.
+        try:
+            return torch.load(path, map_location="cpu", weights_only=True)
+        except TypeError:
+            # Older PyTorch without weights_only argument.
+            return torch.load(path, map_location="cpu")
+        except Exception as exc:
+            try:
+                return torch.load(path, map_location="cpu", weights_only=False)
+            except TypeError:
+                return torch.load(path, map_location="cpu")
+            except Exception:
+                raise exc
+
+    checkpoint = torch_load_checkpoint(model_path)
     if isinstance(checkpoint, nn.Module):
         checkpoint = checkpoint.state_dict()
     if isinstance(checkpoint, dict):
@@ -150,35 +191,63 @@ def _load_real_model(model_path: Path) -> nn.Module:
     return model
 
 
-def load_model_with_fallback() -> tuple[nn.Module, str, str]:
+def load_models_with_fallback(max_models: int = MAX_MODELS) -> tuple[list[nn.Module], list[str], str, str]:
+    loaded_models: list[nn.Module] = []
+    loaded_paths: list[str] = []
     attempted: list[str] = []
+
     for model_path in candidate_model_paths():
         attempted.append(str(model_path))
         if not model_path.exists():
             continue
         try:
             model = _load_real_model(model_path)
-            return model, "real", str(model_path.resolve())
+            loaded_models.append(model)
+            loaded_paths.append(str(model_path.resolve()))
+            if len(loaded_models) >= max_models:
+                break
         except Exception as exc:
             print(f"Model load failed at {model_path}: {exc}")
 
+    if loaded_models:
+        attempted_paths = " | ".join(attempted) if attempted else "<none>"
+        return loaded_models, loaded_paths, "real", attempted_paths
+
     attempted_paths = " | ".join(attempted) if attempted else "<none>"
     print(f"No usable model checkpoint found. Attempted: {attempted_paths}")
-    return _build_model(), "unavailable", attempted_paths
+    return [], [], BACKUP_MODEL_TYPE, attempted_paths
 
 
-MODEL, MODEL_TYPE, ACTIVE_MODEL_PATH = load_model_with_fallback()
+MODELS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS = load_models_with_fallback()
+ACTIVE_MODEL_PATH = ACTIVE_MODEL_PATHS[0] if ACTIVE_MODEL_PATHS else ATTEMPTED_MODEL_PATHS
 
 
 def _ensure_model_ready() -> None:
-    global MODEL, MODEL_TYPE, ACTIVE_MODEL_PATH
+    global MODELS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS, ACTIVE_MODEL_PATH
     if MODEL_TYPE == "real":
         return
-    MODEL, MODEL_TYPE, ACTIVE_MODEL_PATH = load_model_with_fallback()
+    MODELS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS = load_models_with_fallback()
+    ACTIVE_MODEL_PATH = ACTIVE_MODEL_PATHS[0] if ACTIVE_MODEL_PATHS else ATTEMPTED_MODEL_PATHS
 
 
 def is_real_model_loaded() -> bool:
     return MODEL_TYPE == "real"
+
+
+def is_backup_mode() -> bool:
+    return MODEL_TYPE == BACKUP_MODEL_TYPE
+
+
+def get_model_status() -> dict[str, object]:
+    _ensure_model_ready()
+    return {
+        "model_type": MODEL_TYPE,
+        "backup_active": is_backup_mode(),
+        "model_path": ACTIVE_MODEL_PATH,
+        "model_paths": ACTIVE_MODEL_PATHS,
+        "models_loaded": len(ACTIVE_MODEL_PATHS),
+        "attempted_model_paths": ATTEMPTED_MODEL_PATHS,
+    }
 
 
 def _as_input_tensor(input_tensor: np.ndarray, requires_grad: bool = False) -> torch.Tensor:
@@ -188,16 +257,27 @@ def _as_input_tensor(input_tensor: np.ndarray, requires_grad: bool = False) -> t
     return tensor
 
 
+def _backup_predict_prob_amd(input_tensor: np.ndarray) -> float:
+    """Deterministic fallback score from image statistics when model weights are unavailable."""
+    arr = np.asarray(input_tensor, dtype=np.float32)
+    # Expect (1, C, H, W) normalized tensor. Compute stable statistics.
+    mean_val = float(arr.mean())
+    std_val = float(arr.std())
+    # Simple bounded score in [0, 1] using brightness/texture proxy.
+    score = 0.5 + 0.15 * np.tanh(std_val - 1.0) - 0.10 * np.tanh(mean_val)
+    return float(np.clip(score, 0.05, 0.95))
+
+
 def predict_probabilities(input_tensor: np.ndarray) -> np.ndarray:
     _ensure_model_ready()
     if not is_real_model_loaded():
-        raise RuntimeError(
-            f"Real model checkpoint could not be loaded from: {ACTIVE_MODEL_PATH}"
-        )
+        prob_amd = _backup_predict_prob_amd(input_tensor)
+        return np.array([1.0 - prob_amd, prob_amd], dtype=np.float32)
 
     with torch.no_grad():
         tensor = _as_input_tensor(input_tensor)
-        prob_amd = float(MODEL(tensor).item())
+        probs = [float(model(tensor).item()) for model in MODELS]
+        prob_amd = float(np.mean(probs))
 
     prob_amd = float(np.clip(prob_amd, 0.0, 1.0))
     return np.array([1.0 - prob_amd, prob_amd], dtype=np.float32)
@@ -212,12 +292,28 @@ def generate_explainability_cam(
     """Generate a real gradient-based saliency map from the loaded model."""
     _ensure_model_ready()
     if not is_real_model_loaded():
-        raise RuntimeError("Cannot generate CAM because real model is unavailable.")
+        # Backup visualization from per-pixel intensity (keeps GUI flow alive).
+        if base_rgb.shape[:2] != IMAGE_SIZE:
+            base_rgb = cv2.resize(base_rgb, IMAGE_SIZE, interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(base_rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+        gray = gray.astype(np.float32)
+        gray -= gray.min()
+        denom = max(float(gray.max()), 1e-8)
+        gray = gray / denom
+        heat_bgr = cv2.applyColorMap((gray * 255.0).astype(np.uint8), cv2.COLORMAP_JET)
+        heat_rgb = cv2.cvtColor(heat_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+        base = base_rgb.astype(np.float32)
+        blended = (0.6 * base + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(blended).save(output_path)
+        return str(output_path)
+
+    primary_model = MODELS[0]
 
     tensor = _as_input_tensor(input_tensor, requires_grad=True)
 
-    MODEL.zero_grad(set_to_none=True)
-    output = MODEL(tensor).view(-1)
+    primary_model.zero_grad(set_to_none=True)
+    output = primary_model(tensor).view(-1)
 
     target_score = output[0] if int(predicted_idx) == 1 else (1.0 - output[0])
     target_score.backward()

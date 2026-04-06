@@ -8,19 +8,17 @@ from PIL import Image
 
 if __package__:
     from .dl_model import (
-        ACTIVE_MODEL_PATH,
         CLASS_NAMES,
-        MODEL_TYPE,
         generate_explainability_cam,
+        get_model_status,
         predict_probabilities,
     )
     from .preprocessing import preprocess_for_inference
 else:
     from dl_model import (
-        ACTIVE_MODEL_PATH,
         CLASS_NAMES,
-        MODEL_TYPE,
         generate_explainability_cam,
+        get_model_status,
         predict_probabilities,
     )
     from preprocessing import preprocess_for_inference
@@ -49,11 +47,15 @@ def index():
 
 @app.get("/health")
 def health():
+    status = get_model_status()
     return jsonify(
         {
             "status": "ok",
-            "model_type": MODEL_TYPE,
-            "model_path": ACTIVE_MODEL_PATH,
+            "model_type": status["model_type"],
+            "backup_active": status["backup_active"],
+            "model_path": status["model_path"],
+            "model_paths": status["model_paths"],
+            "models_loaded": status["models_loaded"],
         }
     )
 
@@ -114,9 +116,14 @@ def predict():
             output_path=CAMS_DIR / f"{path_stem}_cam.png",
         )
 
+        model_status = get_model_status()
+
         return jsonify(
             {
-                "model_type": MODEL_TYPE,
+                "model_type": model_status["model_type"],
+                "backup_active": model_status["backup_active"],
+                "model_paths": model_status["model_paths"],
+                "models_loaded": model_status["models_loaded"],
                 "patient_name": patient_name,
                 "image_path": str(Path(image_path).resolve()),
                 "cam_image_path": str(Path(cam_path).resolve()),
