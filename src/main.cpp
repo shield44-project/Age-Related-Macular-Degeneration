@@ -301,11 +301,18 @@ public:
                 const QString details = backendDetail.isEmpty()
                     ? reply->errorString()
                     : backendDetail;
+                const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+                const bool isHttpResponse = statusCode >= 100;
+                const QString title = isHttpResponse ? "Backend Request Failed" : "Backend Unreachable";
+                const QString header = isHttpResponse
+                    ? QString("Backend returned HTTP %1 for /predict.").arg(statusCode)
+                    : QString("Could not reach backend at http://127.0.0.1:5000.");
 
                 QMessageBox::warning(
                     this,
-                    "Backend Error",
-                    "Could not reach backend at http://127.0.0.1:5000.\n\n"
+                    title,
+                    header + "\n\n"
                     "Details: " + details
                 );
                 reply->deleteLater();

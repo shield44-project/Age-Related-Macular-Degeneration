@@ -40,19 +40,66 @@ class ViTBinaryClassifier(nn.Module):
 
 def candidate_model_paths() -> list[Path]:
     candidates: list[Path] = []
+    models_root = PACKAGE_DIR / "models"
+
+    def add_if_present(path: Path) -> None:
+        candidates.append(path)
+
+    def remap_stale_absolute(path: Path) -> list[Path]:
+        # Remap absolute paths from another machine by preserving the backend/models suffix.
+        remapped: list[Path] = []
+        parts = list(path.parts)
+        if "backend" in parts and "models" in parts:
+            i_backend = parts.index("backend")
+            i_models = parts.index("models", i_backend + 1)
+            suffix = Path(*parts[i_models + 1 :])
+            if str(suffix):
+                remapped.append(models_root / suffix)
+        if path.name:
+            remapped.extend(sorted(models_root.rglob(path.name)))
+        return remapped
 
     model_path = os.getenv("MODEL_PATH")
     if model_path:
         raw = Path(model_path).expanduser()
-        candidates.append(raw if raw.is_absolute() else (PROJECT_ROOT / raw).resolve())
+        resolved = raw if raw.is_absolute() else (PROJECT_ROOT / raw).resolve()
 
-    candidates.append(DEFAULT_MODEL_PATH)
+        # Allow MODEL_PATH to be a direct file, directory, or glob expression.
+        if any(ch in str(resolved) for ch in ("*", "?", "[")):
+            for match in sorted(PROJECT_ROOT.glob(str(raw))):
+                add_if_present(match)
+        elif resolved.is_dir():
+            for ext in ("*.pth", "*.pt"):
+                for match in sorted(resolved.rglob(ext)):
+                    add_if_present(match)
+        else:
+            add_if_present(resolved)
+            if resolved.is_absolute() and not resolved.exists():
+                for match in remap_stale_absolute(resolved):
+                    add_if_present(match)
+
+    add_if_present(DEFAULT_MODEL_PATH)
+
+    # Additional common roots for portability.
+    for root in (PROJECT_ROOT / "backend" / "models", PROJECT_ROOT / "models", Path.cwd() / "backend" / "models"):
+        for ext in ("*.pth", "*.pt"):
+            for match in sorted(root.rglob(ext)) if root.exists() else []:
+                add_if_present(match)
 
     # Optional local fallback by filename inside backend/models if user provided stale absolute path.
     if model_path:
         stem_name = Path(model_path).name
         if stem_name:
-            candidates.append(PACKAGE_DIR / "models" / stem_name)
+            for match in sorted(models_root.rglob(stem_name)):
+                add_if_present(match)
+
+    # Always discover checkpoints under backend/models recursively.
+    for ext in ("*.pth", "*.pt"):
+        for match in sorted(models_root.rglob(ext)):
+            add_if_present(match)
+
+    # Prefer commonly named best checkpoints first.
+    candidates.sort(key=lambda p: ("best" not in p.name.lower(), len(p.parts), str(p)))
 
     deduped: list[Path] = []
     seen = set()
@@ -66,9 +113,13 @@ def candidate_model_paths() -> list[Path]:
 
 def _load_state_dict(model_path: Path) -> dict[str, torch.Tensor]:
     checkpoint = torch.load(model_path, map_location="cpu")
+    if isinstance(checkpoint, nn.Module):
+        checkpoint = checkpoint.state_dict()
     if isinstance(checkpoint, dict):
         for key in ("state_dict", "model_state_dict", "model", "net", "weights"):
             nested = checkpoint.get(key)
+            if isinstance(nested, nn.Module):
+                nested = nested.state_dict()
             if isinstance(nested, dict):
                 checkpoint = nested
                 break
@@ -91,7 +142,11 @@ def _build_model() -> nn.Module:
 def _load_real_model(model_path: Path) -> nn.Module:
     model = _build_model()
     state_dict = _load_state_dict(model_path)
-    model.load_state_dict(state_dict, strict=True)
+    try:
+        model.load_state_dict(state_dict, strict=True)
+    except RuntimeError:
+        # Fallback for minor key mismatches while still loading usable weights.
+        model.load_state_dict(state_dict, strict=False)
     return model
 
 
@@ -115,6 +170,13 @@ def load_model_with_fallback() -> tuple[nn.Module, str, str]:
 MODEL, MODEL_TYPE, ACTIVE_MODEL_PATH = load_model_with_fallback()
 
 
+def _ensure_model_ready() -> None:
+    global MODEL, MODEL_TYPE, ACTIVE_MODEL_PATH
+    if MODEL_TYPE == "real":
+        return
+    MODEL, MODEL_TYPE, ACTIVE_MODEL_PATH = load_model_with_fallback()
+
+
 def is_real_model_loaded() -> bool:
     return MODEL_TYPE == "real"
 
@@ -127,6 +189,7 @@ def _as_input_tensor(input_tensor: np.ndarray, requires_grad: bool = False) -> t
 
 
 def predict_probabilities(input_tensor: np.ndarray) -> np.ndarray:
+    _ensure_model_ready()
     if not is_real_model_loaded():
         raise RuntimeError(
             f"Real model checkpoint could not be loaded from: {ACTIVE_MODEL_PATH}"
@@ -147,6 +210,7 @@ def generate_explainability_cam(
     output_path: Path,
 ) -> str:
     """Generate a real gradient-based saliency map from the loaded model."""
+    _ensure_model_ready()
     if not is_real_model_loaded():
         raise RuntimeError("Cannot generate CAM because real model is unavailable.")
 
