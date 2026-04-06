@@ -7,7 +7,9 @@ from torch import nn
 
 CLASS_NAMES = ["Normal", "AMD"]
 IMAGE_SIZE = (224, 224)
-DEFAULT_MODEL_PATH = Path("backend/models/ViT_base/best_vit_model.pth")
+PACKAGE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_DIR.parent
+DEFAULT_MODEL_PATH = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model.pth"
 
 class ViTBinaryClassifier(nn.Module):
     def __init__(self):
@@ -33,17 +35,33 @@ class ViTBinaryClassifier(nn.Module):
 def resolve_model_path() -> Path:
     model_path = os.getenv("MODEL_PATH")
     if model_path:
-        return Path(model_path)
+        path = Path(model_path).expanduser()
+        if path.is_absolute():
+            return path
+
+        candidate = (PROJECT_ROOT / path).resolve()
+        if candidate.exists():
+            return candidate
+
+        return path.resolve()
     return DEFAULT_MODEL_PATH
+
+def _load_state_dict(model_path: Path) -> dict[str, torch.Tensor]:
+    checkpoint = torch.load(model_path, map_location="cpu")
+    if isinstance(checkpoint, dict):
+        for key in ("state_dict", "model_state_dict", "model", "net", "weights"):
+            nested = checkpoint.get(key)
+            if isinstance(nested, dict):
+                return nested
+    return checkpoint
 
 def load_model_with_fallback() -> tuple[nn.Module, str]:
     model_path = resolve_model_path()
     if model_path.exists():
         try:
             model = ViTBinaryClassifier()
-            model.load_state_dict(
-                torch.load(model_path, map_location="cpu")
-            )
+            state_dict = _load_state_dict(model_path)
+            model.load_state_dict(state_dict)
             return model.eval(), "real"
         except Exception as e:
             print(f"Model load failed: {e}")

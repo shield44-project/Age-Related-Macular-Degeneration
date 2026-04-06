@@ -32,8 +32,9 @@ Model selection is handled in backend/dl_model.py.
 
 Priority order:
 1. Use MODEL_PATH environment variable if provided.
-2. Else use default path: backend/models/ViT_base/best_vit_model.pth
-3. If model loading fails or file is missing, use dummy model.
+2. Else use the bundled checkpoint at backend/models/ViT_base/best_vit_model.pth.
+3. If the model file is a wrapped checkpoint, the loader will extract the first supported state_dict key.
+4. If model loading fails or file is missing, use dummy model.
 
 Response field model_type tells which one is active:
 - real
@@ -137,6 +138,7 @@ curl -X POST http://localhost:5000/predict \
 
 Option 1:
 - Place trained model at backend/models/ViT_base/best_vit_model.pth
+- The loader resolves this path relative to the backend package, so it works from the project root or when launched through `python -m backend`.
 
 Option 2:
 - Set environment variable MODEL_PATH to your model location:
