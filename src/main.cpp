@@ -32,6 +32,7 @@ public:
     QLabel *fundusLabel;
     QLabel *camsLabel;
     QLabel *diagnosisLabel;
+    QLabel *backendStatusLabel;
     QLineEdit *nameInput;
     QListWidget *historyList;
     QPushButton *themeBtn;
@@ -73,6 +74,10 @@ public:
         diagnosisLabel = new QLabel("Diagnosis: ");
         diagnosisLabel->setFrameShape(QFrame::Box);
 
+        backendStatusLabel = new QLabel("Backend: Checking...");
+        backendStatusLabel->setFrameShape(QFrame::Box);
+        backendStatusLabel->setMinimumWidth(200);
+
         historyList = new QListWidget();
         historyList->setFixedWidth(200);
 
@@ -87,6 +92,7 @@ public:
         
         QHBoxLayout *topLayout = new QHBoxLayout();
         topLayout->addWidget(uploadBtn);
+        topLayout->addWidget(backendStatusLabel);
         topLayout->addStretch();
         topLayout->addWidget(themeBtn);
 
@@ -129,6 +135,13 @@ public:
         connect(historyList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item){
             fundusLabel->setPixmap(QPixmap(item->text()));
         });
+
+        auto *statusTimer = new QTimer(this);
+        connect(statusTimer, &QTimer::timeout, this, [this]() {
+            refreshBackendStatus();
+        });
+        statusTimer->start(3000);
+        refreshBackendStatus();
     }
 
     ~AMD_GUI() override {
@@ -219,6 +232,22 @@ public:
             QTimer::singleShot(500, this, [this, onReady, attemptsLeft]() {
                 waitForBackend(onReady, attemptsLeft - 1);
             });
+        });
+    }
+
+    void refreshBackendStatus() {
+        QNetworkRequest healthReq(QUrl("http://127.0.0.1:5000/health"));
+        QNetworkReply *reply = networkManager->get(healthReq);
+
+        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            if (reply->error() == QNetworkReply::NoError) {
+                backendStatusLabel->setText("Backend: Online");
+                backendStatusLabel->setStyleSheet("QLabel { color: #2e7d32; }");
+            } else {
+                backendStatusLabel->setText("Backend: Offline");
+                backendStatusLabel->setStyleSheet("QLabel { color: #c62828; }");
+            }
+            reply->deleteLater();
         });
     }
 
