@@ -58,7 +58,7 @@ public:
 
         QPushButton *uploadBtn = new QPushButton("Upload Fundus Image");
         
-        themeBtn = new QPushButton(isDarkMode ? "☀️ Light Mode" : "🌙 Dark Mode");
+        themeBtn = new QPushButton(isDarkMode ? "Light Mode" : "Dark Mode");
         themeBtn->setMaximumWidth(150);
 
         fundusLabel = new QLabel("Fundus Image");
@@ -348,7 +348,7 @@ public:
     }
     
     void applyLightMode() {
-        themeBtn->setText("🌙 Dark Mode");
+        themeBtn->setText("Dark Mode");
         
         QPalette lightPalette;
         lightPalette.setColor(QPalette::Window, QColor(255, 255, 255));
@@ -409,7 +409,7 @@ public:
     }
     
     void applyDarkMode() {
-        themeBtn->setText("☀️ Light Mode");
+        themeBtn->setText("Light Mode");
         
         QPalette darkPalette;
         darkPalette.setColor(QPalette::Window, QColor(30, 30, 30));
