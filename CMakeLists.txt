@@ -13,6 +13,7 @@ set(CMAKE_AUTOUIC ON)
 find_package(Qt5 COMPONENTS
     Core
     Gui
+    Network
     Widgets
     REQUIRED
 )
@@ -29,6 +30,7 @@ add_executable(AMD_GUI ${SOURCES})
 target_link_libraries(AMD_GUI
     Qt5::Core
     Qt5::Gui
+    Qt5::Network
     Qt5::Widgets
 )
 

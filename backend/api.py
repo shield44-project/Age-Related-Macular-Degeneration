@@ -94,8 +94,8 @@ def predict():
             {
                 "model_type": MODEL_TYPE,
                 "patient_name": patient_name,
-                "image_path": image_path,
-                "cam_image_path": cam_path,
+                "image_path": str(Path(image_path).resolve()),
+                "cam_image_path": str(Path(cam_path).resolve()),
                 "diagnosis": prediction,
                 "prediction": prediction,
                 "confidence": confidence,

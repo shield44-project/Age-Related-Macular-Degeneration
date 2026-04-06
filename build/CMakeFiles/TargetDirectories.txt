@@ -1,0 +1,5 @@
+/workspaces/pediatric-eye-disease-detector/build/CMakeFiles/AMD_GUI.dir
+/workspaces/pediatric-eye-disease-detector/build/CMakeFiles/edit_cache.dir
+/workspaces/pediatric-eye-disease-detector/build/CMakeFiles/rebuild_cache.dir
+/workspaces/pediatric-eye-disease-detector/build/CMakeFiles/AMD_GUI_autogen_timestamp_deps.dir
+/workspaces/pediatric-eye-disease-detector/build/CMakeFiles/AMD_GUI_autogen.dir

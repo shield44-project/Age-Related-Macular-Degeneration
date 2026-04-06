@@ -11,6 +11,21 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QSettings>
+#include <QFileInfo>
+#include <QFile>
+#include <QHttpMultiPart>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QProcess>
+#include <QCoreApplication>
+#include <QDir>
+#include <QTimer>
+#include <QUrl>
+#include <functional>
 
 class AMD_GUI : public QWidget {
 public:
@@ -22,6 +37,9 @@ public:
     QPushButton *themeBtn;
     bool isDarkMode;
     QSettings *settings;
+    QNetworkAccessManager *networkManager;
+    QProcess *backendProcess;
+    bool backendStartedByGui;
 
     AMD_GUI() {
         setWindowTitle("AMD Detection System");
@@ -30,6 +48,9 @@ public:
         // Initialize settings for theme persistence
         settings = new QSettings("AMD_Detection", "AMD_GUI", this);
         isDarkMode = settings->value("darkMode", false).toBool();
+        networkManager = new QNetworkAccessManager(this);
+        backendProcess = new QProcess(this);
+        backendStartedByGui = false;
 
         nameInput = new QLineEdit();
         nameInput->setPlaceholderText("Enter Patient Name");
@@ -88,7 +109,7 @@ public:
         connect(themeBtn, &QPushButton::clicked, this, &AMD_GUI::toggleTheme);
 
         // Upload button functionality
-        connect(uploadBtn, &QPushButton::clicked, this, [=](){
+        connect(uploadBtn, &QPushButton::clicked, this, [this](){
             QString fileName = QFileDialog::getOpenFileName(
                 this,
                 "Select Fundus Image",
@@ -100,12 +121,189 @@ public:
                 fundusLabel->setPixmap(QPixmap(fileName));
                 historyList->addItem(fileName);
                 diagnosisLabel->setText("Diagnosis: Processing...");
+                ensureBackendAndPredict(fileName);
             }
         });
 
         // History selection functionality
-        connect(historyList, &QListWidget::itemClicked, this, [=](QListWidgetItem *item){
+        connect(historyList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item){
             fundusLabel->setPixmap(QPixmap(item->text()));
+        });
+    }
+
+    ~AMD_GUI() override {
+        if (backendStartedByGui && backendProcess->state() != QProcess::NotRunning) {
+            backendProcess->terminate();
+            if (!backendProcess->waitForFinished(1500)) {
+                backendProcess->kill();
+            }
+        }
+    }
+
+    QString detectProjectRoot() const {
+        QDir dir(QCoreApplication::applicationDirPath());
+        if (dir.cdUp() && dir.cdUp() && dir.exists("backend")) {
+            return dir.absolutePath();
+        }
+
+        QDir fallback(QDir::currentPath());
+        if (fallback.exists("backend")) {
+            return fallback.absolutePath();
+        }
+
+        return QCoreApplication::applicationDirPath();
+    }
+
+    void ensureBackendAndPredict(const QString &fileName) {
+        QNetworkRequest healthReq(QUrl("http://127.0.0.1:5000/health"));
+        QNetworkReply *healthReply = networkManager->get(healthReq);
+
+        connect(healthReply, &QNetworkReply::finished, this, [this, healthReply, fileName]() {
+            const bool backendReady = (healthReply->error() == QNetworkReply::NoError);
+            healthReply->deleteLater();
+
+            if (backendReady) {
+                requestPrediction(fileName);
+                return;
+            }
+
+            startBackendAndWait([this, fileName]() {
+                requestPrediction(fileName);
+            });
+        });
+    }
+
+    void startBackendAndWait(const std::function<void()> &onReady) {
+        if (backendProcess->state() == QProcess::NotRunning) {
+            const QString projectRoot = detectProjectRoot();
+            const QString venvPython = projectRoot + "/.venv/bin/python";
+
+            QString program = QFile::exists(venvPython) ? venvPython : QString("python3");
+            QStringList args;
+            args << "-m" << "backend";
+
+            backendProcess->setProgram(program);
+            backendProcess->setArguments(args);
+            backendProcess->setWorkingDirectory(projectRoot);
+            backendProcess->start();
+            backendStartedByGui = true;
+        }
+
+        diagnosisLabel->setText("Diagnosis: Starting backend...");
+        waitForBackend(onReady, 20);
+    }
+
+    void waitForBackend(const std::function<void()> &onReady, int attemptsLeft) {
+        if (attemptsLeft <= 0) {
+            diagnosisLabel->setText("Diagnosis: Backend unavailable");
+            QMessageBox::warning(
+                this,
+                "Backend Error",
+                "Backend did not become ready in time. Please start it manually with: python -m backend"
+            );
+            return;
+        }
+
+        QNetworkRequest healthReq(QUrl("http://127.0.0.1:5000/health"));
+        QNetworkReply *healthReply = networkManager->get(healthReq);
+
+        connect(healthReply, &QNetworkReply::finished, this, [this, healthReply, onReady, attemptsLeft]() {
+            const bool backendReady = (healthReply->error() == QNetworkReply::NoError);
+            healthReply->deleteLater();
+
+            if (backendReady) {
+                onReady();
+                return;
+            }
+
+            QTimer::singleShot(500, this, [this, onReady, attemptsLeft]() {
+                waitForBackend(onReady, attemptsLeft - 1);
+            });
+        });
+    }
+
+    void requestPrediction(const QString &fileName) {
+        QFile *file = new QFile(fileName);
+        if (!file->open(QIODevice::ReadOnly)) {
+            diagnosisLabel->setText("Diagnosis: Failed to open image file");
+            QMessageBox::warning(this, "File Error", "Unable to open selected image file.");
+            file->deleteLater();
+            return;
+        }
+
+        auto *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+
+        QHttpPart imagePart;
+        imagePart.setHeader(
+            QNetworkRequest::ContentDispositionHeader,
+            QVariant("form-data; name=\"image\"; filename=\"" + QFileInfo(fileName).fileName() + "\"")
+        );
+        imagePart.setBodyDevice(file);
+        file->setParent(multiPart);
+        multiPart->append(imagePart);
+
+        QHttpPart patientPart;
+        patientPart.setHeader(
+            QNetworkRequest::ContentDispositionHeader,
+            QVariant("form-data; name=\"patient_name\"")
+        );
+        patientPart.setBody(nameInput->text().toUtf8());
+        multiPart->append(patientPart);
+
+        QNetworkRequest request(QUrl("http://127.0.0.1:5000/predict"));
+        QNetworkReply *reply = networkManager->post(request, multiPart);
+        multiPart->setParent(reply);
+
+        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            const QByteArray responseBody = reply->readAll();
+
+            if (reply->error() != QNetworkReply::NoError) {
+                diagnosisLabel->setText("Diagnosis: Request failed");
+                QMessageBox::warning(
+                    this,
+                    "Backend Error",
+                    "Could not reach backend at http://127.0.0.1:5000.\n\n"
+                    "Details: " + reply->errorString()
+                );
+                reply->deleteLater();
+                return;
+            }
+
+            QJsonParseError parseError;
+            const QJsonDocument jsonDoc = QJsonDocument::fromJson(responseBody, &parseError);
+            if (parseError.error != QJsonParseError::NoError || !jsonDoc.isObject()) {
+                diagnosisLabel->setText("Diagnosis: Invalid backend response");
+                QMessageBox::warning(this, "Response Error", "Backend returned invalid JSON.");
+                reply->deleteLater();
+                return;
+            }
+
+            const QJsonObject obj = jsonDoc.object();
+            if (obj.contains("error")) {
+                diagnosisLabel->setText("Diagnosis: Backend error");
+                QMessageBox::warning(this, "Prediction Error", obj.value("error").toString());
+                reply->deleteLater();
+                return;
+            }
+
+            const QString prediction = obj.value("prediction").toString("Unknown");
+            const double confidence = obj.value("confidence").toDouble(0.0);
+            const QString modelType = obj.value("model_type").toString("unknown");
+            diagnosisLabel->setText(
+                QString("Diagnosis: %1 | Confidence: %2% | Model: %3")
+                    .arg(prediction)
+                    .arg(QString::number(confidence * 100.0, 'f', 2))
+                    .arg(modelType)
+            );
+
+            const QString camPath = obj.value("cam_image_path").toString();
+            if (!camPath.isEmpty() && QFile::exists(camPath)) {
+                camsLabel->setPixmap(QPixmap(camPath));
+            } else {
+                camsLabel->setText("CAMS Image\n(Not available)");
+            }
+
+            reply->deleteLater();
         });
     }
     
