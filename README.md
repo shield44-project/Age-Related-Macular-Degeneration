@@ -20,6 +20,8 @@ The system allows clinicians or users to upload fundus images captured from fund
    - AMD
    - Normal
 - Fundus Image History panel for tracking previous scans
+- Live backend status indicator (Online/Offline)
+- Automatic backend startup from GUI when backend is not already running
 - **Light/Dark Mode Toggle** with persistent theme preference
 - Lightweight and responsive Qt-based GUI
 
@@ -61,28 +63,37 @@ Displayed on GUI
 - Qt5 development libraries
 - CMake (version 3.16 or higher)
 - C++17/20 compatible compiler
+- Python 3.12+ with virtual environment support
+
+Install system dependencies:
+```bash
+sudo apt update
+sudo apt install qtbase5-dev cmake build-essential python3 python3-venv
+```
+
+Create and prepare Python environment (project root):
+```bash
+python3 -m venv .venv
+./.venv/bin/pip install --upgrade pip
+./.venv/bin/pip install -r requirements.txt
+```
 
 ### Build Steps (Ubuntu/Linux)
 
 Check `CMakeLists.txt` and verify your CMake version. To check your installed version, run `cmake --version` in the terminal.
 
-Install dependencies:
+Build the GUI:
 ```bash
-sudo apt install qtbase5-dev cmake build-essential
+cmake -S . -B build
+cmake --build build -j
 ```
 
-Build the project (make sure to name the executable `AMD_GUI`):
+Run the GUI:
 ```bash
-mkdir build
-cd build
-cmake ..
-make
+./build/bin/AMD_GUI
 ```
 
-Run the application:
-```bash
-./bin/AMD_GUI
-```
+The GUI checks backend health automatically and can start the backend process when needed.
 
 ### Theme Persistence
 The application automatically saves your theme preference using Qt's QSettings. Your chosen mode (light/dark) will be restored when you restart the application.
@@ -94,7 +105,7 @@ The application automatically saves your theme preference using Qt's QSettings. 
 If you prefer not to use CMake, you can compile directly:
 
 ```bash
-g++ -fPIC src/main.cpp -o build/amd_gui `pkg-config --cflags --libs Qt5Widgets` -std=c++17
+g++ -fPIC src/main.cpp -o build/amd_gui `pkg-config --cflags --libs Qt5Widgets Qt5Network` -std=c++17
 ./build/amd_gui
 ```
 
@@ -102,25 +113,33 @@ g++ -fPIC src/main.cpp -o build/amd_gui `pkg-config --cflags --libs Qt5Widgets` 
 
 ## 🔗 Backend Integration
 
-The GUI communicates with the Python backend through file-based inter-process communication (IPC):
+The GUI communicates with the Python backend over HTTP:
 
-1. C++ GUI sends fundus image path to Python backend
+1. C++ GUI sends image + patient name to `POST /predict`
 2. Python performs AMD classification
 3. Python generates CAMS output
-4. Diagnosis and CAMS image path are returned to GUI
+4. Diagnosis, confidence, model type, and CAM image path are returned to GUI
 5. Results are displayed to the user
 
-### Run Backend (Project Root)
+### Run Backend Manually (Optional)
 
 ```bash
-python -m backend
+./.venv/bin/python -m backend
 ```
 
 Alternative script mode:
 
 ```bash
-python backend/server.py
+./.venv/bin/python backend/server.py
 ```
+
+Model health check:
+
+```bash
+curl -s http://127.0.0.1:5000/health
+```
+
+If `model_type` is `real`, the trained model is loaded.
 
 ---
 
@@ -130,7 +149,7 @@ python backend/server.py
 - Qt Framework
 - Python (Backend)
 - Deep Learning Model
-- SQLite Database (Backend)
+- Flask REST API
 
 ---
 
@@ -161,7 +180,7 @@ Age-Related Macular Degeneration is one of the leading causes of vision loss in 
 
 1. Acquire retinal fundus image from user input
 2. Collect patient identifier (name) from GUI
-3. Send image path from Qt GUI to backend via file-based IPC
+3. Send image to backend using HTTP multipart request
 4. Preprocess image and run deep learning inference in Python
 5. Generate classification result and CAMS heatmap
 6. Return output paths/results to GUI
