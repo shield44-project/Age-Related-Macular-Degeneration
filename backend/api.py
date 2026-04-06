@@ -7,11 +7,23 @@ from flask import Flask, jsonify, request
 from PIL import Image
 
 if __package__:
-    from .dl_model import CLASS_NAMES, MODEL_TYPE, predict_probabilities
-    from .preprocessing import create_dummy_cam, preprocess_image
+    from .dl_model import (
+        ACTIVE_MODEL_PATH,
+        CLASS_NAMES,
+        MODEL_TYPE,
+        generate_explainability_cam,
+        predict_probabilities,
+    )
+    from .preprocessing import preprocess_for_inference
 else:
-    from dl_model import CLASS_NAMES, MODEL_TYPE, predict_probabilities
-    from preprocessing import create_dummy_cam, preprocess_image
+    from dl_model import (
+        ACTIVE_MODEL_PATH,
+        CLASS_NAMES,
+        MODEL_TYPE,
+        generate_explainability_cam,
+        predict_probabilities,
+    )
+    from preprocessing import preprocess_for_inference
 
 app = Flask(__name__)
 
@@ -37,7 +49,13 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "model_type": MODEL_TYPE})
+    return jsonify(
+        {
+            "status": "ok",
+            "model_type": MODEL_TYPE,
+            "model_path": ACTIVE_MODEL_PATH,
+        }
+    )
 
 
 def get_request_image() -> tuple[bytes, str]:
@@ -77,10 +95,11 @@ def get_request_image() -> tuple[bytes, str]:
 def predict():
     try:
         payload = request.get_json(silent=True) or {}
-        patient_name = payload.get("patient_name", "")
+        # Support both JSON clients and multipart form-data clients (Qt GUI).
+        patient_name = (payload.get("patient_name") or request.form.get("patient_name", "")).strip()
 
         image_bytes, image_path = get_request_image()
-        input_tensor = preprocess_image(image_bytes)
+        input_tensor, cam_base_rgb = preprocess_for_inference(image_bytes)
 
         probs = predict_probabilities(input_tensor)
         pred_idx = int(probs.argmax())
@@ -88,7 +107,12 @@ def predict():
         confidence = float(probs[pred_idx])
 
         path_stem = Path(image_path).stem
-        cam_path = create_dummy_cam(image_bytes, path_stem, CAMS_DIR)
+        cam_path = generate_explainability_cam(
+            input_tensor=input_tensor,
+            base_rgb=cam_base_rgb,
+            predicted_idx=pred_idx,
+            output_path=CAMS_DIR / f"{path_stem}_cam.png",
+        )
 
         return jsonify(
             {

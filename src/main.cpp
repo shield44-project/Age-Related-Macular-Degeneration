@@ -241,7 +241,9 @@ public:
 
         connect(reply, &QNetworkReply::finished, this, [this, reply]() {
             if (reply->error() == QNetworkReply::NoError) {
-                backendStatusLabel->setText("Backend: Online");
+                const QJsonDocument healthDoc = QJsonDocument::fromJson(reply->readAll());
+                const QString modelType = healthDoc.object().value("model_type").toString("unknown");
+                backendStatusLabel->setText(QString("Backend: Online (%1)").arg(modelType));
                 backendStatusLabel->setStyleSheet("QLabel { color: #2e7d32; }");
             } else {
                 backendStatusLabel->setText("Backend: Offline");

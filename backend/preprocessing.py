@@ -1,58 +1,67 @@
-from io import BytesIO
-from pathlib import Path
 import numpy as np
 import cv2
-from PIL import Image
 
-IMAGE_SIZE = (224, 224) #I changed this because import IMAGE_SIZE from dl_models would not work - dl_models is a directory
+IMAGE_SIZE = (224, 224)
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-def preprocess_image(image_bytes: bytes) -> np.ndarray: #I changed the preprocessing such that it matches what I have used in the kaggle notebooks exactly. Added CLAHE
-    # Decode bytes → BGR uint8
+
+def decode_image_bytes(image_bytes: bytes) -> np.ndarray:
     nparr = np.frombuffer(image_bytes, np.uint8)
-    img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("Failed to decode image bytes.")
+    return image
 
-    # CLAHE grayscale → 3-channel
-    gray     = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    clahe    = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+def apply_clahe(bgr_img: np.ndarray) -> np.ndarray:
+    """BGR uint8 -> CLAHE grayscale stacked to 3-channel uint8."""
+    gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-    img      = np.stack([enhanced, enhanced, enhanced], axis=-1)
+    return np.stack([enhanced, enhanced, enhanced], axis=-1)
 
-    # Center crop to 224×224
+
+def center_crop(img: np.ndarray, crop_size: int) -> np.ndarray:
+    """Square center crop with reflection padding if needed."""
     h, w = img.shape[:2]
-    if h < 224 or w < 224:
-        pad_h = max(0, 224 - h)
-        pad_w = max(0, 224 - w)
+    if h < crop_size or w < crop_size:
+        pad_h = max(0, crop_size - h)
+        pad_w = max(0, crop_size - w)
         img = cv2.copyMakeBorder(
             img,
-            pad_h // 2, pad_h - pad_h // 2,
-            pad_w // 2, pad_w - pad_w // 2,
-            cv2.BORDER_REFLECT_101
+            pad_h // 2,
+            pad_h - pad_h // 2,
+            pad_w // 2,
+            pad_w - pad_w // 2,
+            cv2.BORDER_REFLECT_101,
         )
         h, w = img.shape[:2]
-    top  = (h - 224) // 2
-    left = (w - 224) // 2
-    img  = img[top:top+224, left:left+224]
+    top = (h - crop_size) // 2
+    left = (w - crop_size) // 2
+    return img[top : top + crop_size, left : left + crop_size]
 
-    # Resize + ImageNet normalise
-    img = cv2.resize(img, IMAGE_SIZE, interpolation=cv2.INTER_AREA)
-    img = img.astype(np.float32) / 255.0
-    img = (img - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
 
-    # (H,W,C) → (1,C,H,W) for PyTorch
-    img = np.transpose(img, (2, 0, 1))
-    return np.expand_dims(img, axis=0)   # (1,3,224,224)
+def preprocess_bgr_image(bgr_img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Notebook-aligned preprocessing returning model tensor + display RGB image."""
+    image = apply_clahe(bgr_img)
+    image = center_crop(image, IMAGE_SIZE[0])
+    image = cv2.resize(image, IMAGE_SIZE, interpolation=cv2.INTER_AREA)
 
-def create_dummy_cam(image_bytes: bytes, stem: str, cams_dir: Path) -> str: #I have kept this function unchanged for now, will have to change this later when we have heatmap generation in our models
-    source = Image.open(BytesIO(image_bytes)).convert("RGB").resize(IMAGE_SIZE)
-    source_arr = np.asarray(source, dtype=np.float32)
-    gray = source_arr.mean(axis=2)
-    gray = gray - gray.min()
-    denom = max(gray.max(), 1e-6)
-    gray = gray / denom
-    heat = np.zeros_like(source_arr)
-    heat[..., 0] = gray * 255.0
-    blended = (0.6 * source_arr + 0.4 * heat).clip(0, 255).astype(np.uint8)
-    cam_image = Image.fromarray(blended)
-    cam_path = cams_dir / f"{stem}_cam.png"
-    cam_image.save(cam_path)
-    return str(cam_path)
+    display_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    image = image.astype(np.float32) / 255.0
+    image = (image - IMAGENET_MEAN) / IMAGENET_STD
+    image = np.transpose(image, (2, 0, 1))
+    tensor = np.expand_dims(image, axis=0)
+    return tensor, display_rgb
+
+
+def preprocess_for_inference(image_bytes: bytes) -> tuple[np.ndarray, np.ndarray]:
+    bgr_img = decode_image_bytes(image_bytes)
+    return preprocess_bgr_image(bgr_img)
+
+
+def preprocess_image(image_bytes: bytes) -> np.ndarray:
+    tensor, _ = preprocess_for_inference(image_bytes)
+    return tensor
