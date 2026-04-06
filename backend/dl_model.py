@@ -38,19 +38,30 @@ class ViTBinaryClassifier(nn.Module):
         return self.head(features)
 
 
-def resolve_model_path() -> Path:
+def candidate_model_paths() -> list[Path]:
+    candidates: list[Path] = []
+
     model_path = os.getenv("MODEL_PATH")
     if model_path:
-        path = Path(model_path).expanduser()
-        if path.is_absolute():
-            return path
+        raw = Path(model_path).expanduser()
+        candidates.append(raw if raw.is_absolute() else (PROJECT_ROOT / raw).resolve())
 
-        candidate = (PROJECT_ROOT / path).resolve()
-        if candidate.exists():
-            return candidate
+    candidates.append(DEFAULT_MODEL_PATH)
 
-        return path.resolve()
-    return DEFAULT_MODEL_PATH
+    # Optional local fallback by filename inside backend/models if user provided stale absolute path.
+    if model_path:
+        stem_name = Path(model_path).name
+        if stem_name:
+            candidates.append(PACKAGE_DIR / "models" / stem_name)
+
+    deduped: list[Path] = []
+    seen = set()
+    for p in candidates:
+        key = str(p)
+        if key not in seen:
+            deduped.append(p)
+            seen.add(key)
+    return deduped
 
 
 def _load_state_dict(model_path: Path) -> dict[str, torch.Tensor]:
@@ -85,17 +96,20 @@ def _load_real_model(model_path: Path) -> nn.Module:
 
 
 def load_model_with_fallback() -> tuple[nn.Module, str, str]:
-    model_path = resolve_model_path()
-    if model_path.exists():
+    attempted: list[str] = []
+    for model_path in candidate_model_paths():
+        attempted.append(str(model_path))
+        if not model_path.exists():
+            continue
         try:
             model = _load_real_model(model_path)
             return model, "real", str(model_path.resolve())
         except Exception as exc:
             print(f"Model load failed at {model_path}: {exc}")
-            return _build_model(), "unavailable", str(model_path.resolve())
 
-    print(f"Model file not found: {model_path}")
-    return _build_model(), "unavailable", str(model_path)
+    attempted_paths = " | ".join(attempted) if attempted else "<none>"
+    print(f"No usable model checkpoint found. Attempted: {attempted_paths}")
+    return _build_model(), "unavailable", attempted_paths
 
 
 MODEL, MODEL_TYPE, ACTIVE_MODEL_PATH = load_model_with_fallback()
