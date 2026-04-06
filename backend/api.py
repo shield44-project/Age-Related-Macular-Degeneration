@@ -6,8 +6,12 @@ from uuid import uuid4
 from flask import Flask, jsonify, request
 from PIL import Image
 
-from .dl_model import CLASS_NAMES, MODEL_TYPE, predict_probabilities
-from .preprocessing import create_dummy_cam, preprocess_image
+if __package__:
+    from .dl_model import CLASS_NAMES, MODEL_TYPE, predict_probabilities
+    from .preprocessing import create_dummy_cam, preprocess_image
+else:
+    from dl_model import CLASS_NAMES, MODEL_TYPE, predict_probabilities
+    from preprocessing import create_dummy_cam, preprocess_image
 
 app = Flask(__name__)
 
@@ -16,6 +20,24 @@ CAMS_DIR = Path("runtime/cams")
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 CAMS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/")
+def index():
+    return jsonify(
+        {
+            "message": "AMD backend is running.",
+            "endpoints": {
+                "health": "/health",
+                "predict": "/predict",
+            },
+        }
+    )
+
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok", "model_type": MODEL_TYPE})
 
 
 def get_request_image() -> tuple[bytes, str]:

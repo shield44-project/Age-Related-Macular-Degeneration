@@ -12,14 +12,13 @@ The system allows clinicians or users to upload fundus images captured from fund
 
 ## 🎯 Features
 
-- Upload retinal fundus images from local system
+- Upload retinal fundus images from the local system
 - Enter patient name for identification
 - Display original fundus image
 - Display CAMS heatmap image (affected retinal regions)
 - View predicted diagnosis:
-  - Treatable AMD
-  - Non-Treatable AMD
-  - Normal Eye
+   - AMD
+   - Normal
 - Fundus Image History panel for tracking previous scans
 - **Light/Dark Mode Toggle** with persistent theme preference
 - Lightweight and responsive Qt-based GUI
@@ -65,14 +64,14 @@ Displayed on GUI
 
 ### Build Steps (Ubuntu/Linux)
 
-Check CMakeLists.txt and verify ur cmake version matches or not (To know your cmake version go to your terminal and type cmake --version)
+Check `CMakeLists.txt` and verify your CMake version. To check your installed version, run `cmake --version` in the terminal.
 
 Install dependencies:
 ```bash
 sudo apt install qtbase5-dev cmake build-essential
 ```
 
-Build the project(Make sure to name the project AMD_GUI):
+Build the project (make sure to name the executable `AMD_GUI`):
 ```bash
 mkdir build
 cd build
@@ -109,7 +108,19 @@ The GUI communicates with the Python backend through file-based inter-process co
 2. Python performs AMD classification
 3. Python generates CAMS output
 4. Diagnosis and CAMS image path are returned to GUI
-5. Results displayed to the user
+5. Results are displayed to the user
+
+### Run Backend (Project Root)
+
+```bash
+python -m backend
+```
+
+Alternative script mode:
+
+```bash
+python backend/server.py
+```
 
 ---
 
@@ -139,7 +150,7 @@ Age-Related Macular Degeneration is one of the leading causes of vision loss in 
 
 - Build a user-friendly Qt C++ GUI for AMD screening workflows
 - Integrate the GUI with a Python deep learning backend
-- Provide clear diagnostic output (Treatable AMD / Non-Treatable AMD / Normal Eye)
+- Provide clear diagnostic output (AMD / Normal)
 - Visualize lesion-relevant regions using CAMS heatmaps
 - Maintain scan history for quick review and comparison
 - Support efficient clinical decision-making with minimal UI complexity

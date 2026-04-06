@@ -8,6 +8,10 @@ It currently supports a dummy PyTorch model for development and can automaticall
 Main endpoint:
 - POST /predict
 
+Additional endpoints:
+- GET /
+- GET /health
+
 The endpoint supports both:
 - Multipart upload input (form-data key: image)
 - JSON input with a local image path (image_path)
@@ -16,7 +20,7 @@ This is useful for both web/API testing and Qt GUI integration.
 
 ## Folder Structure
 
-- backend/backend.py: App runner (entry point)
+- backend/server.py: App runner (entry point)
 - backend/api.py: Flask app and route logic
 - backend/dl_model.py: Model loading and prediction helpers
 - backend/preprocessing.py: Image preprocessing and dummy CAM generation
@@ -28,7 +32,7 @@ Model selection is handled in backend/dl_model.py.
 
 Priority order:
 1. Use MODEL_PATH environment variable if provided.
-2. Else use default path: backend/models/amd_model.pt
+2. Else use default path: backend/models/ViT_base/best_vit_model.pth
 3. If model loading fails or file is missing, use dummy model.
 
 Response field model_type tells which one is active:
@@ -36,6 +40,14 @@ Response field model_type tells which one is active:
 - dummy
 
 ## Endpoint: POST /predict
+
+## Endpoint: GET /
+
+Returns a simple JSON message confirming the backend is running and listing available routes.
+
+## Endpoint: GET /health
+
+Returns service health and active model type.
 
 ### Input Option A: Multipart Form
 
@@ -81,13 +93,12 @@ Example:
   "patient_name": "John Doe",
   "image_path": "runtime/uploads/fundus_20260322_101010.png",
   "cam_image_path": "runtime/cams/fundus_20260322_101010_cam.png",
-  "diagnosis": "Normal Eye",
-  "prediction": "Normal Eye",
+  "diagnosis": "Normal",
+  "prediction": "Normal",
   "confidence": 0.61,
   "class_probabilities": {
-    "Normal Eye": 0.61,
-    "Treatable AMD": 0.22,
-    "Non-Treatable AMD": 0.17
+    "Normal": 0.61,
+    "AMD": 0.39
   }
 }
 
@@ -98,8 +109,13 @@ On failure:
 ## Run the Backend
 
 From project root:
+Make sure to `pip install -r requirements.txt
+`
+python -m backend
 
-python backend/backend.py
+Alternative script mode:
+
+python backend/server.py
 
 Server runs on:
 - http://0.0.0.0:5000
@@ -120,12 +136,12 @@ curl -X POST http://localhost:5000/predict \
 ## Add a Real Model Later
 
 Option 1:
-- Place trained model at backend/models/amd_model.pt
+- Place trained model at backend/models/ViT_base/best_vit_model.pth
 
 Option 2:
 - Set environment variable MODEL_PATH to your model location:
 
-MODEL_PATH=/absolute/path/to/model.pt python backend/backend.py
+MODEL_PATH=/absolute/path/to/model.pt python -m backend
 
 ## Notes
 
