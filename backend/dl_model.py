@@ -7,6 +7,7 @@ import timm
 import torch
 from PIL import Image
 from torch import nn
+from typing import Any
 
 CLASS_NAMES = ["Normal", "AMD"]
 IMAGE_SIZE = (224, 224)
@@ -17,6 +18,7 @@ DEFAULT_MODEL_PATH_2 = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model_2.p
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MAX_MODELS = 2
 BACKUP_MODEL_TYPE = "backup"
+DEFAULT_MODEL_NAME = "ViT-B16 AMD Classifier"
 
 
 def _force_backup_mode() -> bool:
@@ -136,8 +138,7 @@ def candidate_model_paths() -> list[Path]:
     return deduped
 
 
-def _load_state_dict(model_path: Path) -> dict[str, torch.Tensor]:
-    def torch_load_checkpoint(path: Path):
+def _torch_load_checkpoint(path: Path):
         # PyTorch 2.6 changed default weights_only=True. Try safe mode first,
         # then trusted full-load mode for older full-checkpoint files.
         try:
@@ -153,7 +154,8 @@ def _load_state_dict(model_path: Path) -> dict[str, torch.Tensor]:
             except Exception:
                 raise exc
 
-    checkpoint = torch_load_checkpoint(model_path)
+
+def _extract_state_dict(checkpoint: Any) -> dict[str, torch.Tensor]:
     if isinstance(checkpoint, nn.Module):
         checkpoint = checkpoint.state_dict()
     if isinstance(checkpoint, dict):
@@ -175,35 +177,107 @@ def _load_state_dict(model_path: Path) -> dict[str, torch.Tensor]:
     return cleaned
 
 
+def _extract_metrics(checkpoint: Any) -> dict[str, float | None]:
+    metric_keys = {
+        "accuracy": ("accuracy", "acc", "val_accuracy", "best_val_acc"),
+        "precision": ("precision", "val_precision", "best_precision"),
+        "recall": ("recall", "val_recall", "best_recall"),
+        "f1_score": ("f1", "f1_score", "val_f1", "best_f1"),
+    }
+    metrics: dict[str, float | None] = {
+        "accuracy": None,
+        "precision": None,
+        "recall": None,
+        "f1_score": None,
+    }
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+
+    for out_key, keys in metric_keys.items():
+        for key in keys:
+            value = checkpoint.get(key)
+            if isinstance(value, (float, int)):
+                val = float(value)
+                if val > 1.0:
+                    val /= 100.0
+                metrics[out_key] = float(np.clip(val, 0.0, 1.0))
+                break
+
+    env_map = {
+        "accuracy": "MODEL_ACCURACY",
+        "precision": "MODEL_PRECISION",
+        "recall": "MODEL_RECALL",
+        "f1_score": "MODEL_F1",
+    }
+    for out_key, env_key in env_map.items():
+        if metrics[out_key] is not None:
+            continue
+        env_val = os.getenv(env_key)
+        if not env_val:
+            continue
+        try:
+            parsed = float(env_val)
+            if parsed > 1.0:
+                parsed /= 100.0
+            metrics[out_key] = float(np.clip(parsed, 0.0, 1.0))
+        except ValueError:
+            pass
+    return metrics
+
+
+def _extract_model_name(model_path: Path, checkpoint: Any) -> str:
+    if isinstance(checkpoint, dict):
+        for key in ("model_name", "name", "arch", "architecture"):
+            value = checkpoint.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    stem = model_path.stem.replace("_", " ").replace("-", " ").strip()
+    return stem.title() if stem else DEFAULT_MODEL_NAME
+
+
 def _build_model() -> nn.Module:
     model = ViTBinaryClassifier()
     return model.to(DEVICE).eval()
 
 
-def _load_real_model(model_path: Path) -> nn.Module:
+def _load_real_model(model_path: Path) -> tuple[nn.Module, str, dict[str, float | None]]:
     model = _build_model()
-    state_dict = _load_state_dict(model_path)
+    checkpoint = _torch_load_checkpoint(model_path)
+    state_dict = _extract_state_dict(checkpoint)
     try:
         model.load_state_dict(state_dict, strict=True)
     except RuntimeError:
         # Fallback for minor key mismatches while still loading usable weights.
         model.load_state_dict(state_dict, strict=False)
-    return model
+    model_name = _extract_model_name(model_path, checkpoint)
+    metrics = _extract_metrics(checkpoint)
+    return model, model_name, metrics
 
 
-def load_models_with_fallback(max_models: int = MAX_MODELS) -> tuple[list[nn.Module], list[str], str, str]:
+def load_models_with_fallback(max_models: int = MAX_MODELS) -> tuple[list[nn.Module], list[dict[str, Any]], str, str]:
     loaded_models: list[nn.Module] = []
-    loaded_paths: list[str] = []
+    loaded_infos: list[dict[str, Any]] = []
     attempted: list[str] = []
+    seen_resolved_paths: set[str] = set()
 
     for model_path in candidate_model_paths():
         attempted.append(str(model_path))
         if not model_path.exists():
             continue
+        resolved_path = str(model_path.resolve())
+        if resolved_path in seen_resolved_paths:
+            continue
         try:
-            model = _load_real_model(model_path)
+            model, model_name, metrics = _load_real_model(model_path)
             loaded_models.append(model)
-            loaded_paths.append(str(model_path.resolve()))
+            loaded_infos.append(
+                {
+                    "path": resolved_path,
+                    "name": model_name,
+                    "metrics": metrics,
+                }
+            )
+            seen_resolved_paths.add(resolved_path)
             if len(loaded_models) >= max_models:
                 break
         except Exception as exc:
@@ -211,23 +285,27 @@ def load_models_with_fallback(max_models: int = MAX_MODELS) -> tuple[list[nn.Mod
 
     if loaded_models:
         attempted_paths = " | ".join(attempted) if attempted else "<none>"
-        return loaded_models, loaded_paths, "real", attempted_paths
+        return loaded_models, loaded_infos, "real", attempted_paths
 
     attempted_paths = " | ".join(attempted) if attempted else "<none>"
     print(f"No usable model checkpoint found. Attempted: {attempted_paths}")
     return [], [], BACKUP_MODEL_TYPE, attempted_paths
 
 
-MODELS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS = load_models_with_fallback()
+MODELS, ACTIVE_MODEL_INFOS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS = load_models_with_fallback()
+ACTIVE_MODEL_PATHS = [info["path"] for info in ACTIVE_MODEL_INFOS]
 ACTIVE_MODEL_PATH = ACTIVE_MODEL_PATHS[0] if ACTIVE_MODEL_PATHS else ATTEMPTED_MODEL_PATHS
+ACTIVE_MODEL_NAME = ACTIVE_MODEL_INFOS[0]["name"] if ACTIVE_MODEL_INFOS else "Backup Heuristic Inference"
 
 
 def _ensure_model_ready() -> None:
-    global MODELS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS, ACTIVE_MODEL_PATH
+    global MODELS, ACTIVE_MODEL_INFOS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS, ACTIVE_MODEL_PATH, ACTIVE_MODEL_NAME
     if MODEL_TYPE == "real":
         return
-    MODELS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS = load_models_with_fallback()
+    MODELS, ACTIVE_MODEL_INFOS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS = load_models_with_fallback()
+    ACTIVE_MODEL_PATHS = [info["path"] for info in ACTIVE_MODEL_INFOS]
     ACTIVE_MODEL_PATH = ACTIVE_MODEL_PATHS[0] if ACTIVE_MODEL_PATHS else ATTEMPTED_MODEL_PATHS
+    ACTIVE_MODEL_NAME = ACTIVE_MODEL_INFOS[0]["name"] if ACTIVE_MODEL_INFOS else "Backup Heuristic Inference"
 
 
 def is_real_model_loaded() -> bool:
@@ -240,13 +318,28 @@ def is_backup_mode() -> bool:
 
 def get_model_status() -> dict[str, object]:
     _ensure_model_ready()
+    metrics = {
+        "accuracy": None,
+        "precision": None,
+        "recall": None,
+        "f1_score": None,
+    }
+    if ACTIVE_MODEL_INFOS:
+        first_metrics = ACTIVE_MODEL_INFOS[0].get("metrics", {})
+        for key in metrics:
+            value = first_metrics.get(key)
+            metrics[key] = float(value) if isinstance(value, (float, int)) else None
+
     return {
         "model_type": MODEL_TYPE,
+        "model_name": ACTIVE_MODEL_NAME,
         "backup_active": is_backup_mode(),
         "model_path": ACTIVE_MODEL_PATH,
         "model_paths": ACTIVE_MODEL_PATHS,
+        "model_names": [info["name"] for info in ACTIVE_MODEL_INFOS],
         "models_loaded": len(ACTIVE_MODEL_PATHS),
         "attempted_model_paths": ATTEMPTED_MODEL_PATHS,
+        "metrics": metrics,
     }
 
 

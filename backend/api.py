@@ -52,10 +52,13 @@ def health():
         {
             "status": "ok",
             "model_type": status["model_type"],
+            "model_name": status["model_name"],
             "backup_active": status["backup_active"],
             "model_path": status["model_path"],
             "model_paths": status["model_paths"],
+            "model_names": status["model_names"],
             "models_loaded": status["models_loaded"],
+            "metrics": status["metrics"],
         }
     )
 
@@ -121,15 +124,22 @@ def predict():
         return jsonify(
             {
                 "model_type": model_status["model_type"],
+                "model_name": model_status["model_name"],
                 "backup_active": model_status["backup_active"],
                 "model_paths": model_status["model_paths"],
+                "model_names": model_status["model_names"],
                 "models_loaded": model_status["models_loaded"],
                 "patient_name": patient_name,
                 "image_path": str(Path(image_path).resolve()),
                 "cam_image_path": str(Path(cam_path).resolve()),
+                "eye_condition": prediction,
                 "diagnosis": prediction,
                 "prediction": prediction,
                 "confidence": confidence,
+                "accuracy": model_status["metrics"]["accuracy"],
+                "precision": model_status["metrics"]["precision"],
+                "recall": model_status["metrics"]["recall"],
+                "f1_score": model_status["metrics"]["f1_score"],
                 "class_probabilities": {
                     name: float(prob) for name, prob in zip(CLASS_NAMES, probs)
                 },

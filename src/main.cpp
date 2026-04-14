@@ -242,8 +242,9 @@ public:
         connect(reply, &QNetworkReply::finished, this, [this, reply]() {
             if (reply->error() == QNetworkReply::NoError) {
                 const QJsonDocument healthDoc = QJsonDocument::fromJson(reply->readAll());
-                const QString modelType = healthDoc.object().value("model_type").toString("unknown");
-                backendStatusLabel->setText(QString("Backend: Online (%1)").arg(modelType));
+                const QJsonObject obj = healthDoc.object();
+                const QString modelName = obj.value("model_name").toString("Unknown Model");
+                backendStatusLabel->setText(QString("Backend: Online (%1)").arg(modelName));
                 backendStatusLabel->setStyleSheet("QLabel { color: #2e7d32; }");
             } else {
                 backendStatusLabel->setText("Backend: Offline");
@@ -337,13 +338,29 @@ public:
             }
 
             const QString prediction = obj.value("prediction").toString("Unknown");
+            const QString eyeCondition = obj.value("eye_condition").toString(prediction);
             const double confidence = obj.value("confidence").toDouble(0.0);
-            const QString modelType = obj.value("model_type").toString("unknown");
+            const QString modelName = obj.value("model_name").toString("Unknown Model");
+
+            auto metricPct = [&obj](const char *key) -> QString {
+                const QJsonValue value = obj.value(key);
+                if (!value.isDouble()) {
+                    return "N/A";
+                }
+                const double v = value.toDouble();
+                return QString::number(v * 100.0, 'f', 2) + "%";
+            };
+
+            const QString confidenceText = QString::number(confidence * 100.0, 'f', 2) + "%";
             diagnosisLabel->setText(
-                QString("Diagnosis: %1 | Confidence: %2% | Model: %3")
-                    .arg(prediction)
-                    .arg(QString::number(confidence * 100.0, 'f', 2))
-                    .arg(modelType)
+                QString("Eye Condition: %1 | Confidence: %2 | Accuracy: %3 | Precision: %4 | Recall: %5 | F1 Score: %6 | Model: %7")
+                    .arg(eyeCondition)
+                    .arg(confidenceText)
+                    .arg(metricPct("accuracy"))
+                    .arg(metricPct("precision"))
+                    .arg(metricPct("recall"))
+                    .arg(metricPct("f1_score"))
+                    .arg(modelName)
             );
 
             const QString camPath = obj.value("cam_image_path").toString();
