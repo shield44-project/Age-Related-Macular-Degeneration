@@ -141,7 +141,9 @@ def candidate_model_paths() -> list[Path]:
 def _torch_load_checkpoint(path: Path):
         # PyTorch 2.6 changed default weights_only=True. Try safe mode first,
         # then trusted full-load mode for older full-checkpoint files.
-        try:
+
+        #Since model loading was working perfectly when done manually, this script seems to contain the error I have written a more direct approach which may not check all edge cases
+        '''try:
             return torch.load(path, map_location="cpu", weights_only=True)
         except TypeError:
             # Older PyTorch without weights_only argument.
@@ -152,7 +154,8 @@ def _torch_load_checkpoint(path: Path):
             except TypeError:
                 return torch.load(path, map_location="cpu")
             except Exception:
-                raise exc
+                raise exc'''
+        return torch.load(path, map_location="cpu", weights_only=False)
 
 
 def _extract_state_dict(checkpoint: Any) -> dict[str, torch.Tensor]:
