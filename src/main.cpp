@@ -154,7 +154,7 @@ private:
         form->addRow("Name:", nameInput);
 
         ageInput = new QSpinBox();
-        ageInput->setRange(1, 120);
+        ageInput->setRange(0, 120);
         ageInput->setValue(50);
         ageInput->setObjectName("sidebarInput");
         form->addRow("Age:", ageInput);
@@ -718,7 +718,7 @@ private:
         scanCountLabel->setText(QString("Total scans: %1").arg(total));
     }
 
-    void onRecordSelected(int row, int /*col*/) {
+    void onRecordSelected(int row, int) {
         QTableWidgetItem *idItem = patientTable->item(row, 0);
         if (!idItem) return;
         const QString imgPath = idItem->data(Qt::UserRole).toString();
