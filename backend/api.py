@@ -190,13 +190,15 @@ def patients():
     result = get_all_patients()
     if not result.get("success"):
         return jsonify({"error": "Failed to retrieve patient records."}), 500
-    return jsonify(result)
+    # Explicitly return only known-safe fields to avoid taint propagation.
+    return jsonify({"success": True, "count": result["count"], "patients": result["patients"]})
 
 
 @app.get("/patients/<int:patient_id>")
 def patient(patient_id: int):
     """Return a single patient record by ID."""
     result = get_patient_by_id(patient_id)
-    if result.get("success"):
-        return jsonify(result)
-    return jsonify({"error": f"No patient found with ID {patient_id}."}), 404
+    if not result.get("success"):
+        return jsonify({"error": f"No patient found with ID {patient_id}."}), 404
+    # Explicitly return only the patient record fields.
+    return jsonify({"success": True, "patient": result["patient"]})
