@@ -3,8 +3,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-# Database file path
-DB_PATH = "patient_records.db"
+# Absolute path: store the DB alongside uploads/cams under runtime/
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _PACKAGE_DIR.parent
+DB_PATH = _PROJECT_ROOT / "runtime" / "patient_records.db"
 
 
 def initialize_database() -> None:
@@ -12,6 +14,7 @@ def initialize_database() -> None:
     Initialize the SQLite database with the patient table.
     Creates the database and table if they don't exist.
     """
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
