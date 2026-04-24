@@ -124,6 +124,7 @@ def predict():
             patient_age = int(patient_age_raw) if patient_age_raw else 0
         except (ValueError, TypeError):
             patient_age = 0
+            print(f"Warning: could not parse patient_age value {patient_age_raw!r}; defaulting to 0.")
 
         image_bytes, image_path = get_request_image()
         input_tensor, cam_base_rgb = preprocess_for_inference(image_bytes)
@@ -144,7 +145,7 @@ def predict():
         # Persist the scan to the patient database
         db_result = insert_patient_record(
             name=patient_name if patient_name else "Unknown",
-            age=patient_age if 0 <= patient_age <= 150 else 0,
+            age=patient_age if 0 <= patient_age <= 120 else 0,
             image_path=str(Path(image_path).resolve()),
             prediction=prediction,
             confidence=confidence,
@@ -186,7 +187,10 @@ def predict():
 @app.get("/patients")
 def patients():
     """Return all patient records from the database."""
-    return jsonify(get_all_patients())
+    result = get_all_patients()
+    if not result.get("success"):
+        return jsonify({"error": "Failed to retrieve patient records."}), 500
+    return jsonify(result)
 
 
 @app.get("/patients/<int:patient_id>")
@@ -195,4 +199,4 @@ def patient(patient_id: int):
     result = get_patient_by_id(patient_id)
     if result.get("success"):
         return jsonify(result)
-    return jsonify(result), 404
+    return jsonify({"error": f"No patient found with ID {patient_id}."}), 404

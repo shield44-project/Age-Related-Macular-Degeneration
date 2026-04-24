@@ -8,13 +8,15 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _PACKAGE_DIR.parent
 DB_PATH = _PROJECT_ROOT / "runtime" / "patient_records.db"
 
+# Ensure the parent directory exists at import time (once).
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 
 def initialize_database() -> None:
     """
     Initialize the SQLite database with the patient table.
     Creates the database and table if they don't exist.
     """
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -81,7 +83,7 @@ def insert_patient_record(
                 "message": "Error: 'name' is required and must be a non-empty string"
             }
         
-        if not isinstance(age, int) or age < 0 or age > 150:
+        if not isinstance(age, int) or age < 0 or age > 120:
             return {
                 "success": False,
                 "message": "Error: 'age' must be an integer between 0 and 150"
