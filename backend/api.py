@@ -13,7 +13,7 @@ if __package__:
         get_model_status,
         predict_probabilities,
     )
-    from .preprocessing import preprocess_for_inference
+    from .preprocessing import preprocess_for_inference, is_valid_fundus_image, decode_image_bytes
     from .database import (
         initialize_database,
         insert_patient_record,
@@ -27,7 +27,7 @@ else:
         get_model_status,
         predict_probabilities,
     )
-    from preprocessing import preprocess_for_inference
+    from preprocessing import preprocess_for_inference, is_valid_fundus_image, decode_image_bytes
     from database import (
         initialize_database,
         insert_patient_record,
@@ -128,6 +128,25 @@ def predict():
 
         image_bytes, image_path = get_request_image()
         input_tensor, cam_base_rgb = preprocess_for_inference(image_bytes)
+
+        # Validate that the image is a retinal fundus photograph
+        from io import BytesIO as _BytesIO
+        import numpy as _np
+        import cv2 as _cv2
+        _nparr = _np.frombuffer(image_bytes, _np.uint8)
+        _bgr = _cv2.imdecode(_nparr, _cv2.IMREAD_COLOR)
+        if _bgr is None:
+            try:
+                from PIL import Image as _PILImage
+                _pil = _PILImage.open(_BytesIO(image_bytes)).convert("RGB")
+                _bgr = _cv2.cvtColor(_np.asarray(_pil, dtype=_np.uint8), _cv2.COLOR_RGB2BGR)
+            except Exception:
+                _bgr = None
+        if _bgr is not None and not is_valid_fundus_image(_bgr):
+            return jsonify({
+                "error": "Invalid Fundus Image. Please enter a valid eye fundus image.",
+                "invalid_fundus": True,
+            }), 400
 
         probs = predict_probabilities(input_tensor)
         pred_idx = int(probs.argmax())
