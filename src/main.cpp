@@ -154,7 +154,7 @@ private:
         form->addRow("Name:", nameInput);
 
         ageInput = new QSpinBox();
-        ageInput->setRange(0, 120);
+        ageInput->setRange(1, 120);
         ageInput->setValue(50);
         ageInput->setObjectName("sidebarInput");
         form->addRow("Age:", ageInput);

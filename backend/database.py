@@ -86,7 +86,7 @@ def insert_patient_record(
         if not isinstance(age, int) or age < 0 or age > 120:
             return {
                 "success": False,
-                "message": "Error: 'age' must be an integer between 0 and 150"
+                "message": "Error: 'age' must be an integer between 0 and 120"
             }
         
         # Validate optional fields
