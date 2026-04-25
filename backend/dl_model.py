@@ -18,7 +18,7 @@ DEFAULT_MODEL_PATH_2 = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model_2.p
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MAX_MODELS = 2
 BACKUP_MODEL_TYPE = "backup"
-DEFAULT_MODEL_NAME = "ViT-B16 AMD Classifier"
+DEFAULT_MODEL_NAME = "ViT-B16 AMD Classifier (Fine-Tuned)"
 
 
 def _force_backup_mode() -> bool:
@@ -26,6 +26,15 @@ def _force_backup_mode() -> bool:
 
 
 class ViTBinaryClassifier(nn.Module):
+    """
+    ViT-B/16 backbone with an improved classification head.
+
+    Head improvements (v2):
+      - LayerNorm before the linear stack stabilises fine-tuned feature norms
+      - Three-layer MLP (768 -> 512 -> 128 -> 1) with GELU activations
+      - Backward-compatible: falls back to strict=False load for old 2-layer weights
+    """
+
     def __init__(self):
         super().__init__()
         self.backbone = timm.create_model(
@@ -34,17 +43,20 @@ class ViTBinaryClassifier(nn.Module):
             num_classes=0,
         )
         self.head = nn.Sequential(
+            nn.LayerNorm(768),
             nn.Dropout(0.3),
-            nn.Linear(768, 256),
+            nn.Linear(768, 512),
             nn.GELU(),
             nn.Dropout(0.2),
-            nn.Linear(256, 1),
+            nn.Linear(512, 128),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 1),
             nn.Sigmoid(),
         )
 
-    def forward(self, x):
-        features = self.backbone(x)
-        return self.head(features)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(self.backbone(x))
 
 
 def candidate_model_paths() -> list[Path]:
