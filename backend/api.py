@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
+import re
 
 from flask import Flask, jsonify, request
 from PIL import Image
@@ -54,48 +55,89 @@ def clamp_metric(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
-def calculate_image_metrics(probs, pred_idx: int) -> dict:
-    """Estimate per-image analysis scores from the current prediction.
+def _normalise_label(value) -> str | None:
+    text = str(value or "").strip().lower()
+    if text in {"amd", "age-related macular degeneration", "age related macular degeneration"}:
+        return "AMD"
+    if text in {"normal", "healthy", "no amd", "non-amd", "non_amd"}:
+        return "Normal"
+    return None
 
-    True accuracy/precision/recall/F1 require labelled ground-truth batches, so
-    they cannot be measured for one uploaded image at inference time. These
-    image-level scores are confidence-derived and therefore update for every
-    fundus image while keeping the existing GUI metric fields meaningful.
+
+def infer_ground_truth_label(record: dict) -> str | None:
+    """Infer demo labels from known dataset-style names when explicit truth is absent."""
+    for key in ("ground_truth", "true_label", "label", "actual_label"):
+        label = _normalise_label(record.get(key))
+        if label:
+            return label
+
+    candidates = [
+        Path(str(record.get("image_path") or "")).stem,
+        str(record.get("name") or ""),
+    ]
+    for candidate in candidates:
+        tokens = {token for token in re.split(r"[^a-zA-Z0-9]+", candidate.lower()) if token}
+        if "amd" in tokens:
+            return "AMD"
+        if tokens.intersection({"normal", "healthy"}):
+            return "Normal"
+    return None
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None
+
+
+def calculate_cumulative_metrics(records: list[dict]) -> dict:
+    """Calculate classification metrics from all labelled images processed so far.
+
+    AMD is treated as the positive class. Records without an inferable ground
+    truth label are excluded because accuracy/precision/recall/specificity/F1
+    are only valid when predictions are compared with known labels.
     """
-    prob_values = [float(p) for p in probs]
-    confidence = clamp_metric(prob_values[pred_idx])
-    sorted_probs = sorted(prob_values, reverse=True)
-    runner_up = sorted_probs[1] if len(sorted_probs) > 1 else 1.0 - confidence
-    margin = clamp_metric(confidence - runner_up)
+    tp = tn = fp = fn = skipped = 0
 
-    # Accuracy-like score tracks the selected class confidence directly.
-    accuracy = confidence
+    for record in records:
+        truth = infer_ground_truth_label(record)
+        pred = _normalise_label(record.get("prediction"))
+        if not truth or not pred:
+            skipped += 1
+            continue
 
-    # Precision is stricter when the winning class barely beats the runner-up.
-    precision = clamp_metric(confidence * (0.82 + 0.18 * margin))
+        if truth == "AMD" and pred == "AMD":
+            tp += 1
+        elif truth == "Normal" and pred == "Normal":
+            tn += 1
+        elif truth == "Normal" and pred == "AMD":
+            fp += 1
+        elif truth == "AMD" and pred == "Normal":
+            fn += 1
 
-    # Recall is slightly more conservative for uncertain positive/negative
-    # calls, but still follows the current image probability distribution.
-    recall = clamp_metric(confidence * (0.76 + 0.24 * confidence))
-    sensitivity = recall
-
-    # Specificity estimates how confidently the model rules out the opposite
-    # class. Strong margins produce a higher score; close calls stay lower.
-    specificity = clamp_metric(confidence * (0.74 + 0.26 * margin))
-
+    total = tp + tn + fp + fn
+    precision = _safe_ratio(tp, tp + fp)
+    recall = _safe_ratio(tp, tp + fn)
     f1_score = (
         2.0 * precision * recall / (precision + recall)
-        if precision + recall > 0.0
-        else 0.0
+        if precision is not None and recall is not None and precision + recall > 0.0
+        else None
     )
 
     return {
-        "accuracy": accuracy,
+        "accuracy": _safe_ratio(tp + tn, total),
         "precision": precision,
         "recall": recall,
-        "sensitivity": sensitivity,
-        "specificity": specificity,
-        "f1_score": clamp_metric(f1_score),
+        "sensitivity": recall,
+        "specificity": _safe_ratio(tn, tn + fp),
+        "f1_score": f1_score,
+        "metrics_source": "cumulative_labelled_uploads",
+        "metrics_sample_count": total,
+        "metrics_skipped_count": skipped,
+        "confusion_matrix": {
+            "true_amd_pred_amd": tp,
+            "true_amd_pred_normal": fn,
+            "true_normal_pred_amd": fp,
+            "true_normal_pred_normal": tn,
+        },
     }
 
 
@@ -193,7 +235,6 @@ def predict():
         pred_idx = int(probs.argmax())
         prediction = CLASS_NAMES[pred_idx]
         confidence = float(probs[pred_idx])
-        image_metrics = calculate_image_metrics(probs, pred_idx)
 
         path_stem = Path(image_path).stem
         cam_path = generate_explainability_cam(
@@ -214,6 +255,10 @@ def predict():
         patient_id = db_result.get("record_id") if db_result.get("success") else None
 
         model_status = get_model_status()
+        patients_result = get_all_patients()
+        cumulative_metrics = calculate_cumulative_metrics(
+            patients_result.get("patients", []) if patients_result.get("success") else []
+        )
 
         return jsonify(
             {
@@ -232,12 +277,16 @@ def predict():
                 "diagnosis": prediction,
                 "prediction": prediction,
                 "confidence": confidence,
-                "accuracy": image_metrics["accuracy"],
-                "precision": image_metrics["precision"],
-                "recall": image_metrics["recall"],
-                "sensitivity": image_metrics["sensitivity"],
-                "specificity": image_metrics["specificity"],
-                "f1_score": image_metrics["f1_score"],
+                "accuracy": cumulative_metrics["accuracy"],
+                "precision": cumulative_metrics["precision"],
+                "recall": cumulative_metrics["recall"],
+                "sensitivity": cumulative_metrics["sensitivity"],
+                "specificity": cumulative_metrics["specificity"],
+                "f1_score": cumulative_metrics["f1_score"],
+                "metrics_source": cumulative_metrics["metrics_source"],
+                "metrics_sample_count": cumulative_metrics["metrics_sample_count"],
+                "metrics_skipped_count": cumulative_metrics["metrics_skipped_count"],
+                "confusion_matrix": cumulative_metrics["confusion_matrix"],
                 "model_metrics": model_status["metrics"],
                 "class_probabilities": {
                     name: float(prob) for name, prob in zip(CLASS_NAMES, probs)
