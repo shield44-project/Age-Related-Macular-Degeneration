@@ -15,6 +15,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 DEFAULT_MODEL_PATH = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model.pth"
 DEFAULT_MODEL_PATH_2 = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model_2.pth"
+DEFAULT_MODEL_PATH_IMPROVED = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model_improved.pth"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MAX_MODELS = 2
 BACKUP_MODEL_TYPE = "backup"
@@ -45,6 +46,19 @@ class ViTBinaryClassifier(nn.Module):
     def forward(self, x):
         features = self.backbone(x)
         return self.head(features)
+
+
+class ViTMultiClassClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.backbone = timm.create_model(
+            "vit_base_patch16_224",
+            pretrained=False,
+            num_classes=2,
+        )
+
+    def forward(self, x):
+        return self.backbone(x)
 
 
 def candidate_model_paths() -> list[Path]:
@@ -104,6 +118,7 @@ def candidate_model_paths() -> list[Path]:
             if entry:
                 collect_from_configured_path(entry)
 
+    add_if_present(DEFAULT_MODEL_PATH_IMPROVED)
     add_if_present(DEFAULT_MODEL_PATH)
     add_if_present(DEFAULT_MODEL_PATH_2)
 
@@ -126,7 +141,14 @@ def candidate_model_paths() -> list[Path]:
             add_if_present(match)
 
     # Prefer commonly named best checkpoints first.
-    candidates.sort(key=lambda p: ("best" not in p.name.lower(), len(p.parts), str(p)))
+    candidates.sort(
+        key=lambda p: (
+            "best" not in p.name.lower(),
+            "improved" not in p.name.lower(),
+            len(p.parts),
+            str(p),
+        )
+    )
 
     deduped: list[Path] = []
     seen = set()
@@ -238,20 +260,35 @@ def _extract_model_name(model_path: Path, checkpoint: Any) -> str:
     return stem.title() if stem else DEFAULT_MODEL_NAME
 
 
-def _build_model() -> nn.Module:
-    model = ViTBinaryClassifier()
-    return model.to(DEVICE).eval()
+def _build_legacy_model() -> nn.Module:
+    return ViTBinaryClassifier().to(DEVICE).eval()
+
+
+def _build_multiclass_model() -> nn.Module:
+    return ViTMultiClassClassifier().to(DEVICE).eval()
+
+
+def _try_load_model(model: nn.Module, state_dict: dict[str, torch.Tensor], strict: bool = True) -> nn.Module:
+    try:
+        model.load_state_dict(state_dict, strict=strict)
+        return model
+    except RuntimeError:
+        if strict:
+            model.load_state_dict(state_dict, strict=False)
+            return model
+        raise
 
 
 def _load_real_model(model_path: Path) -> tuple[nn.Module, str, dict[str, float | None]]:
-    model = _build_model()
     checkpoint = _torch_load_checkpoint(model_path)
     state_dict = _extract_state_dict(checkpoint)
+
+    model: nn.Module
     try:
-        model.load_state_dict(state_dict, strict=True)
-    except RuntimeError:
-        # Fallback for minor key mismatches while still loading usable weights.
-        model.load_state_dict(state_dict, strict=False)
+        model = _try_load_model(_build_legacy_model(), state_dict, strict=True)
+    except Exception:
+        model = _try_load_model(_build_multiclass_model(), state_dict, strict=True)
+
     model_name = _extract_model_name(model_path, checkpoint)
     metrics = _extract_metrics(checkpoint)
     return model, model_name, metrics
@@ -372,8 +409,15 @@ def predict_probabilities(input_tensor: np.ndarray) -> np.ndarray:
 
     with torch.no_grad():
         tensor = _as_input_tensor(input_tensor)
-        probs = [float(model(tensor).item()) for model in MODELS]
-        prob_amd = float(np.mean(probs))
+        per_model_probs: list[float] = []
+        for model in MODELS:
+            out = model(tensor)
+            if out.ndim == 2 and out.shape[-1] == 2:
+                prob_amd = float(torch.softmax(out, dim=1)[0, 1].item())
+            else:
+                prob_amd = float(out.view(-1)[0].item())
+            per_model_probs.append(prob_amd)
+        prob_amd = float(np.mean(per_model_probs))
 
     prob_amd = float(np.clip(prob_amd, 0.0, 1.0))
     return np.array([1.0 - prob_amd, prob_amd], dtype=np.float32)
@@ -409,9 +453,12 @@ def generate_explainability_cam(
     tensor = _as_input_tensor(input_tensor, requires_grad=True)
 
     primary_model.zero_grad(set_to_none=True)
-    output = primary_model(tensor).view(-1)
-
-    target_score = output[0] if int(predicted_idx) == 1 else (1.0 - output[0])
+    output = primary_model(tensor)
+    if output.ndim == 2 and output.shape[-1] == 2:
+        target_score = torch.softmax(output, dim=1)[0, int(predicted_idx)]
+    else:
+        output = output.view(-1)
+        target_score = output[0] if int(predicted_idx) == 1 else (1.0 - output[0])
     target_score.backward()
 
     grad_map = tensor.grad.detach().abs().mean(dim=1)[0].cpu().numpy()

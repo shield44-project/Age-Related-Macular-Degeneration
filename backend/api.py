@@ -1,5 +1,4 @@
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
@@ -90,9 +89,13 @@ def get_request_image() -> tuple[bytes, str]:
         if not image_bytes:
             raise ValueError("Uploaded file is empty.")
 
+        decoded = decode_image_bytes(image_bytes)
+        if not is_valid_fundus_image(decoded):
+            raise ValueError("INVALID_FUNDUS_IMAGE")
+
         stem = Path(file.filename).stem or f"upload_{uuid4().hex[:8]}"
         upload_path = UPLOAD_DIR / f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        Image.open(BytesIO(image_bytes)).convert("RGB").save(upload_path)
+        Image.fromarray(decoded[:, :, ::-1]).save(upload_path)
         return image_bytes, str(upload_path)
 
     payload = request.get_json(silent=True) or {}
@@ -109,6 +112,10 @@ def get_request_image() -> tuple[bytes, str]:
     image_bytes = source_path.read_bytes()
     if not image_bytes:
         raise ValueError("Image file is empty.")
+
+    decoded = decode_image_bytes(image_bytes)
+    if not is_valid_fundus_image(decoded):
+        raise ValueError("INVALID_FUNDUS_IMAGE")
 
     return image_bytes, str(source_path)
 
@@ -128,25 +135,6 @@ def predict():
 
         image_bytes, image_path = get_request_image()
         input_tensor, cam_base_rgb = preprocess_for_inference(image_bytes)
-
-        # Validate that the image is a retinal fundus photograph
-        from io import BytesIO as _BytesIO
-        import numpy as _np
-        import cv2 as _cv2
-        _nparr = _np.frombuffer(image_bytes, _np.uint8)
-        _bgr = _cv2.imdecode(_nparr, _cv2.IMREAD_COLOR)
-        if _bgr is None:
-            try:
-                from PIL import Image as _PILImage
-                _pil = _PILImage.open(_BytesIO(image_bytes)).convert("RGB")
-                _bgr = _cv2.cvtColor(_np.asarray(_pil, dtype=_np.uint8), _cv2.COLOR_RGB2BGR)
-            except Exception:
-                _bgr = None
-        if _bgr is not None and not is_valid_fundus_image(_bgr):
-            return jsonify({
-                "error": "Invalid Fundus Image. Please enter a valid eye fundus image.",
-                "invalid_fundus": True,
-            }), 400
 
         probs = predict_probabilities(input_tensor)
         pred_idx = int(probs.argmax())
@@ -199,6 +187,15 @@ def predict():
                 },
             }
         )
+    except ValueError as exc:
+        if str(exc) == "INVALID_FUNDUS_IMAGE":
+            return jsonify(
+                {
+                    "error": "Invalid fundus image. Please upload a valid retinal fundus image.",
+                    "invalid_fundus": True,
+                }
+            ), 400
+        return jsonify({"error": f"Failed to process image: {str(exc)}"}), 400
     except Exception as exc:
         return jsonify({"error": f"Failed to process image: {str(exc)}"}), 400
 

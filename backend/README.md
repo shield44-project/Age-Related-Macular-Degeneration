@@ -7,6 +7,9 @@ This backend provides a Flask API for AMD image prediction with persistent patie
 Main endpoint:
 - POST /predict
 
+Fundus validation:
+- Non-fundus images are rejected with HTTP 400 and `invalid_fundus=true`.
+
 Additional endpoints:
 - GET /
 - GET /health
@@ -158,6 +161,41 @@ Option 2:
 - Set environment variable MODEL_PATH to your model location:
 
 MODEL_PATH=/absolute/path/to/model.pt python -m backend
+
+## Train and Evaluate an Improved Model
+
+Use the provided script to train on one or more datasets and test the resulting checkpoint.
+
+Expected layout for each dataset root:
+
+```text
+<dataset_root>/
+  train/
+    Normal/
+    AMD/
+  val/
+    Normal/
+    AMD/
+  test/            # optional but recommended
+    Normal/
+    AMD/
+```
+
+Example command:
+
+```bash
+python -m backend.train_and_evaluate \
+  --dataset-roots /data/dataset_a /data/dataset_b /data/dataset_c \
+  --epochs 30 \
+  --batch-size 16 \
+  --output backend/models/ViT_base/best_vit_model_improved.pth
+```
+
+Outputs:
+- Best checkpoint file: `best_vit_model_improved.pth`
+- Metrics report JSON: `best_vit_model_improved.metrics.json`
+
+The backend model loader now supports both legacy binary-sigmoid checkpoints and 2-class ViT checkpoints saved by this script.
 
 ## Notes
 

@@ -85,7 +85,7 @@ public:
         resize(1280, 800);
 
         settings            = new QSettings("AMD_Detection", "AMD_GUI", this);
-        isDarkMode          = settings->value("darkMode", false).toBool();
+        isDarkMode          = settings->value("darkMode", true).toBool();
         networkManager      = new QNetworkAccessManager(this);
         backendProcess      = new QProcess(this);
         backendStartedByGui = false;
@@ -130,7 +130,7 @@ private:
         sideLayout->setSpacing(10);
 
         // Logo / title
-        QLabel *appTitle = new QLabel("🔬  AMD Detect");
+        QLabel *appTitle = new QLabel("AMD Detect");
         appTitle->setObjectName("appTitle");
         sideLayout->addWidget(appTitle);
 
@@ -162,7 +162,7 @@ private:
         sideLayout->addWidget(patientGroup);
 
         // Primary upload/analyse button
-        uploadBtn = new QPushButton("📁   Upload & Analyse");
+        uploadBtn = new QPushButton("Upload & Analyse");
         uploadBtn->setObjectName("primaryBtn");
         uploadBtn->setMinimumHeight(44);
         sideLayout->addWidget(uploadBtn);
@@ -188,7 +188,7 @@ private:
         sideLayout->addStretch();
 
         // Theme toggle
-        themeBtn = new QPushButton(isDarkMode ? "☀   Light Mode" : "🌙   Dark Mode");
+        themeBtn = new QPushButton(isDarkMode ? "Light Mode" : "Dark Mode");
         themeBtn->setObjectName("secondaryBtn");
         sideLayout->addWidget(themeBtn);
 
@@ -296,7 +296,7 @@ private:
         resultsLayout->addLayout(metricsGrid);
 
         analysisLayout->addWidget(resultsGrp);
-        tabWidget->addTab(analysisTab, "🔍   Analysis");
+        tabWidget->addTab(analysisTab, "Analysis");
 
         // ── TAB 2: Patient Records ─────────────────────────────────────────
         QWidget     *recordsTab    = new QWidget();
@@ -306,15 +306,12 @@ private:
 
         // Control bar: search + refresh
         QHBoxLayout *ctrlRow = new QHBoxLayout();
-        QLabel *searchIcon = new QLabel("🔎");
-        ctrlRow->addWidget(searchIcon);
-
         searchInput = new QLineEdit();
         searchInput->setPlaceholderText("Search by patient name…");
         searchInput->setObjectName("searchBar");
         ctrlRow->addWidget(searchInput);
 
-        QPushButton *refreshBtn = new QPushButton("⟳   Refresh");
+        QPushButton *refreshBtn = new QPushButton("Refresh");
         refreshBtn->setObjectName("secondaryBtn");
         refreshBtn->setMaximumWidth(120);
         ctrlRow->addWidget(refreshBtn);
@@ -341,46 +338,7 @@ private:
         patientTable->setShowGrid(false);
         recordsLayout->addWidget(patientTable);
 
-        tabWidget->addTab(recordsTab, "📋   Patient Records");
-
-        // ── TAB 3: About ──────────────────────────────────────────────────
-        QWidget     *aboutTab    = new QWidget();
-        QVBoxLayout *aboutLayout = new QVBoxLayout(aboutTab);
-        aboutLayout->setContentsMargins(24, 24, 24, 24);
-        aboutLayout->setSpacing(10);
-
-        QLabel *aboutTitle = new QLabel("AMD Detection System");
-        aboutTitle->setObjectName("aboutTitle");
-        aboutLayout->addWidget(aboutTitle);
-
-        QLabel *aboutText = new QLabel(
-            "<p><b>Age-Related Macular Degeneration (AMD) Detection</b></p>"
-            "<p>This system uses a <b>Vision Transformer (ViT-B16)</b> deep learning model to classify "
-            "retinal fundus images as <b>Normal</b> or <b>AMD</b>.</p><hr/>"
-            "<p><b>Features</b></p>"
-            "<ul>"
-            "<li>AI-powered retinal image classification</li>"
-            "<li>Gradient-based saliency map (CAM) visualisation</li>"
-            "<li>Persistent patient record database (SQLite)</li>"
-            "<li>Confidence scoring &amp; three-tier risk assessment</li>"
-            "<li>Model performance metrics: Accuracy, Precision, Recall, F1</li>"
-            "<li>Searchable &amp; sortable patient history</li>"
-            "</ul><hr/>"
-            "<p><b>How to use</b></p>"
-            "<ol>"
-            "<li>Enter the patient name and age in the left sidebar</li>"
-            "<li>Click <i>Upload &amp; Analyse</i> and select a fundus image</li>"
-            "<li>Review the diagnosis, confidence bar, and saliency map</li>"
-            "<li>Every scan is auto-saved — view history in <i>Patient Records</i></li>"
-            "<li>Click any row in the records table to reload that fundus image</li>"
-            "</ol>"
-        );
-        aboutText->setWordWrap(true);
-        aboutText->setObjectName("aboutText");
-        aboutLayout->addWidget(aboutText);
-        aboutLayout->addStretch();
-
-        tabWidget->addTab(aboutTab, "ℹ   About");
+        tabWidget->addTab(recordsTab, "Patient Records");
 
         root->addWidget(tabWidget, 1);
 
@@ -520,9 +478,25 @@ private:
                 predictionBadge->setText("Request Failed");
                 statusBar()->showMessage("Prediction request failed.");
                 QString detail;
+                bool invalidFundus = false;
                 const QJsonDocument errDoc = QJsonDocument::fromJson(body);
-                if (errDoc.isObject()) detail = errDoc.object().value("error").toString();
+                if (errDoc.isObject()) {
+                    const QJsonObject errObj = errDoc.object();
+                    detail = errObj.value("error").toString();
+                    invalidFundus = errObj.value("invalid_fundus").toBool(false);
+                }
                 if (detail.isEmpty())  detail = reply->errorString();
+                if (invalidFundus) {
+                    predictionBadge->setText("Invalid Fundus Image");
+                    predictionBadge->setStyleSheet(
+                        "QLabel { background-color: #c0392b; color: white; "
+                        "border-radius: 8px; padding: 8px 20px; font-size: 16px; font-weight: bold; }");
+                    riskLabel->setText("Risk: N/A");
+                    confidenceBar->setValue(0);
+                    confidenceValueLabel->setText("N/A");
+                    camsLabel->setText("No saliency map\nfor invalid fundus image");
+                    statusBar()->showMessage("Invalid fundus image selected.");
+                }
                 QMessageBox::warning(this, "Prediction Failed",
                     QString("Could not get prediction.\n\nDetails: %1").arg(detail));
                 reply->deleteLater();
@@ -576,17 +550,17 @@ private:
         QString risk, riskStyle;
         if (prediction == "AMD") {
             if (confidence >= 0.85) {
-                risk      = "⚠  High Risk";
+                risk      = "High Risk";
                 riskStyle = "QLabel { background-color:#c0392b; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             } else if (confidence >= 0.60) {
-                risk      = "⚡  Moderate Risk";
+                risk      = "Moderate Risk";
                 riskStyle = "QLabel { background-color:#e67e22; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             } else {
-                risk      = "○  Low Risk";
+                risk      = "Low Risk";
                 riskStyle = "QLabel { background-color:#f39c12; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             }
         } else {
-            risk      = "✓  Healthy";
+            risk      = "Healthy";
             riskStyle = "QLabel { background-color:#27ae60; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
         }
         riskLabel->setText(risk);
@@ -741,11 +715,11 @@ private:
     }
 
     void applyLightMode() {
-        themeBtn->setText("🌙   Dark Mode");
+        themeBtn->setText("Dark Mode");
         qApp->setStyleSheet(R"(
             /* ── Base ── */
             QMainWindow, QWidget {
-                background-color: #f0f2f5;
+                background-color: #000000;
                 color: #2c3e50;
                 font-family: "Segoe UI", Arial, sans-serif;
                 font-size: 13px;
@@ -823,7 +797,7 @@ private:
             /* ── Tabs ── */
             QTabWidget#mainTabs::pane {
                 border: none;
-                background-color: #f0f2f5;
+                background-color: #000000;
             }
             QTabBar::tab {
                 background-color: #dde3ea;
@@ -835,7 +809,7 @@ private:
                 border-top-right-radius: 6px;
             }
             QTabBar::tab:selected {
-                background-color: #f0f2f5;
+                background-color: #000000;
                 color: #2980b9;
                 font-weight: bold;
             }
@@ -924,22 +898,15 @@ private:
                 font-size: 12px;
                 padding-left: 6px;
             }
-            /* ── About tab ── */
-            QLabel#aboutTitle {
-                font-size: 22px;
-                font-weight: bold;
-                color: #2980b9;
-            }
-            QLabel#aboutText { color: #2c3e50; line-height: 1.5; }
         )");
     }
 
     void applyDarkMode() {
-        themeBtn->setText("☀   Light Mode");
+        themeBtn->setText("Light Mode");
         qApp->setStyleSheet(R"(
             /* ── Base ── */
             QMainWindow, QWidget {
-                background-color: #1a1d24;
+                background-color: #000000;
                 color: #dfe6e9;
                 font-family: "Segoe UI", Arial, sans-serif;
                 font-size: 13px;
@@ -1017,7 +984,7 @@ private:
             /* ── Tabs ── */
             QTabWidget#mainTabs::pane {
                 border: none;
-                background-color: #1a1d24;
+                background-color: #000000;
             }
             QTabBar::tab {
                 background-color: #2d3436;
@@ -1029,7 +996,7 @@ private:
                 border-top-right-radius: 6px;
             }
             QTabBar::tab:selected {
-                background-color: #1a1d24;
+                background-color: #000000;
                 color: #74b9ff;
                 font-weight: bold;
             }
@@ -1118,13 +1085,6 @@ private:
                 font-size: 12px;
                 padding-left: 6px;
             }
-            /* ── About tab ── */
-            QLabel#aboutTitle {
-                font-size: 22px;
-                font-weight: bold;
-                color: #74b9ff;
-            }
-            QLabel#aboutText { color: #dfe6e9; line-height: 1.5; }
         )");
     }
 
