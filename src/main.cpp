@@ -72,7 +72,8 @@ public:
     QLabel       *recordsStatsLabel;
 
     // ── State ────────────────────────────────────────────────────────────────
-    bool                  isDarkMode;
+    // 0 = Light, 1 = Dark, 2 = Neon
+    int                   themeMode;
     QSettings            *settings;
     QNetworkAccessManager *networkManager;
     QProcess             *backendProcess;
@@ -85,15 +86,15 @@ public:
         resize(1280, 800);
 
         settings            = new QSettings("AMD_Detection", "AMD_GUI", this);
-        isDarkMode          = settings->value("darkMode", false).toBool();
+        themeMode           = settings->value("themeMode", 0).toInt();
+        if (themeMode < 0 || themeMode > 2) themeMode = 0;
         networkManager      = new QNetworkAccessManager(this);
         backendProcess      = new QProcess(this);
         backendStartedByGui = false;
 
         setupUI();
 
-        if (isDarkMode) applyDarkMode();
-        else            applyLightMode();
+        applyTheme();
 
         // Periodic backend health check
         auto *statusTimer = new QTimer(this);
@@ -188,7 +189,7 @@ private:
         sideLayout->addStretch();
 
         // Theme toggle
-        themeBtn = new QPushButton(isDarkMode ? "☀   Light Mode" : "🌙   Dark Mode");
+        themeBtn = new QPushButton(themeMode == 1 ? "⚡   Neon Mode" : themeMode == 2 ? "☀   Light Mode" : "🌙   Dark Mode");
         themeBtn->setObjectName("secondaryBtn");
         sideLayout->addWidget(themeBtn);
 
@@ -539,9 +540,25 @@ private:
             }
             const QJsonObject obj = doc.object();
             if (obj.contains("error")) {
-                predictionBadge->setText("Backend Error");
-                statusBar()->showMessage("Backend error: " + obj.value("error").toString());
-                QMessageBox::warning(this, "Prediction Error", obj.value("error").toString());
+                const QString errorMsg = obj.value("error").toString();
+                const bool isInvalidFundus = obj.value("invalid_fundus").toBool(false);
+                if (isInvalidFundus) {
+                    predictionBadge->setText("Invalid Image");
+                    predictionBadge->setStyleSheet(
+                        "QLabel { background-color: #ff0055; color: white; "
+                        "border-radius: 8px; padding: 8px 20px; font-size: 14px; font-weight: bold; }");
+                    riskLabel->setText("⚠  Not a Fundus Image");
+                    riskLabel->setStyleSheet(
+                        "QLabel { background-color: #cc0044; color: white; "
+                        "border-radius: 8px; padding: 8px 16px; font-weight: bold; }");
+                    statusBar()->showMessage("Invalid image: not a retinal fundus photograph.");
+                    QMessageBox::warning(this, "Invalid Fundus Image",
+                        "Invalid Fundus Image.\nPlease enter a valid eye fundus image.");
+                } else {
+                    predictionBadge->setText("Backend Error");
+                    statusBar()->showMessage("Backend error: " + errorMsg);
+                    QMessageBox::warning(this, "Prediction Error", errorMsg);
+                }
                 reply->deleteLater();
                 return;
             }
@@ -556,16 +573,26 @@ private:
         const double  confidence = obj.value("confidence").toDouble(0.0);
         const QString modelName  = obj.value("model_name").toString("Unknown");
 
+        const bool isNeon = (themeMode == 2);
+
         // ── Prediction badge ──────────────────────────────────────────────
         predictionBadge->setText(prediction);
         if (prediction == "AMD") {
+            const QString bg = isNeon ? "#ff0033" : "#e74c3c";
+            const QString fg = "white";
+            const QString bdr = isNeon ? "border: 2px solid #ff0033; " : "";
             predictionBadge->setStyleSheet(
-                "QLabel { background-color: #e74c3c; color: white; "
-                "border-radius: 8px; padding: 8px 20px; font-size: 16px; font-weight: bold; }");
+                QString("QLabel { background-color: %1; color: %2; %3"
+                        "border-radius: 8px; padding: 8px 20px; font-size: 16px; font-weight: bold; }")
+                    .arg(bg, fg, bdr));
         } else if (prediction == "Normal") {
+            const QString bg = isNeon ? "#001a00" : "#27ae60";
+            const QString fg = isNeon ? "#00ff88" : "white";
+            const QString bdr = isNeon ? "border: 2px solid #00ff88; " : "";
             predictionBadge->setStyleSheet(
-                "QLabel { background-color: #27ae60; color: white; "
-                "border-radius: 8px; padding: 8px 20px; font-size: 16px; font-weight: bold; }");
+                QString("QLabel { background-color: %1; color: %2; %3"
+                        "border-radius: 8px; padding: 8px 20px; font-size: 16px; font-weight: bold; }")
+                    .arg(bg, fg, bdr));
         } else {
             predictionBadge->setStyleSheet(
                 "QLabel { background-color: #7f8c8d; color: white; "
@@ -576,18 +603,26 @@ private:
         QString risk, riskStyle;
         if (prediction == "AMD") {
             if (confidence >= 0.85) {
-                risk      = "⚠  High Risk";
-                riskStyle = "QLabel { background-color:#c0392b; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
+                risk = "⚠  High Risk";
+                riskStyle = isNeon
+                    ? "QLabel { background-color:#1a0000; color:#ff0033; border:2px solid #ff0033; border-radius:8px; padding:8px 16px; font-weight:bold; }"
+                    : "QLabel { background-color:#c0392b; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             } else if (confidence >= 0.60) {
-                risk      = "⚡  Moderate Risk";
-                riskStyle = "QLabel { background-color:#e67e22; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
+                risk = "⚡  Moderate Risk";
+                riskStyle = isNeon
+                    ? "QLabel { background-color:#1a0a00; color:#ff6600; border:2px solid #ff6600; border-radius:8px; padding:8px 16px; font-weight:bold; }"
+                    : "QLabel { background-color:#e67e22; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             } else {
-                risk      = "○  Low Risk";
-                riskStyle = "QLabel { background-color:#f39c12; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
+                risk = "○  Low Risk";
+                riskStyle = isNeon
+                    ? "QLabel { background-color:#1a1000; color:#ffcc00; border:2px solid #ffcc00; border-radius:8px; padding:8px 16px; font-weight:bold; }"
+                    : "QLabel { background-color:#f39c12; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             }
         } else {
-            risk      = "✓  Healthy";
-            riskStyle = "QLabel { background-color:#27ae60; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
+            risk = "✓  Healthy";
+            riskStyle = isNeon
+                ? "QLabel { background-color:#001a00; color:#00ff88; border:2px solid #00ff88; border-radius:8px; padding:8px 16px; font-weight:bold; }"
+                : "QLabel { background-color:#27ae60; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
         }
         riskLabel->setText(risk);
         riskLabel->setStyleSheet(riskStyle);
@@ -734,10 +769,17 @@ private:
     // ── Theme ────────────────────────────────────────────────────────────────
 
     void toggleTheme() {
-        isDarkMode = !isDarkMode;
-        settings->setValue("darkMode", isDarkMode);
-        if (isDarkMode) applyDarkMode();
-        else            applyLightMode();
+        themeMode = (themeMode + 1) % 3;
+        settings->setValue("themeMode", themeMode);
+        applyTheme();
+    }
+
+    void applyTheme() {
+        switch (themeMode) {
+            case 1:  applyDarkMode(); break;
+            case 2:  applyNeonMode(); break;
+            default: applyLightMode(); break;
+        }
     }
 
     void applyLightMode() {
@@ -935,7 +977,7 @@ private:
     }
 
     void applyDarkMode() {
-        themeBtn->setText("☀   Light Mode");
+        themeBtn->setText("⚡   Neon Mode");
         qApp->setStyleSheet(R"(
             /* ── Base ── */
             QMainWindow, QWidget {
@@ -1125,6 +1167,204 @@ private:
                 color: #74b9ff;
             }
             QLabel#aboutText { color: #dfe6e9; line-height: 1.5; }
+        )");
+    }
+
+    void applyNeonMode() {
+        themeBtn->setText("☀   Light Mode");
+        qApp->setStyleSheet(R"(
+            /* ── Base ── */
+            QMainWindow, QWidget {
+                background-color: #000000;
+                color: #e0ffe0;
+                font-family: "Segoe UI", Arial, sans-serif;
+                font-size: 13px;
+            }
+            /* ── Sidebar ── */
+            QWidget#sidebar {
+                background-color: #050505;
+            }
+            QWidget#sidebar QLabel {
+                color: #00ff88;
+            }
+            QLabel#appTitle {
+                color: #00ff88;
+                font-size: 20px;
+                font-weight: bold;
+            }
+            QLabel#appSubtitle {
+                color: #007744;
+                font-size: 11px;
+            }
+            QLabel#sectionHeader {
+                color: #00ff88;
+                font-size: 10px;
+                font-weight: bold;
+                letter-spacing: 2px;
+            }
+            QLabel#statusLabel, QLabel#infoLabel {
+                color: #00cc66;
+                font-size: 12px;
+            }
+            QGroupBox#patientGroup {
+                color: #00ff88;
+                border: 1px solid #00ff88;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox#patientGroup::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                color: #00ff88;
+                font-size: 12px;
+            }
+            QGroupBox#patientGroup QLabel {
+                color: #00cc66;
+            }
+            QLineEdit#sidebarInput, QSpinBox#sidebarInput {
+                background-color: #0a0a0a;
+                color: #00ff88;
+                border: 1px solid #00ff88;
+                border-radius: 4px;
+                padding: 5px 8px;
+            }
+            QPushButton#primaryBtn {
+                background-color: #000000;
+                color: #00ff88;
+                border: 2px solid #00ff88;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton#primaryBtn:hover   { background-color: #00ff88; color: #000000; }
+            QPushButton#primaryBtn:pressed { background-color: #00cc66; color: #000000; }
+            QPushButton#secondaryBtn {
+                background-color: #000000;
+                color: #00cc66;
+                border: 1px solid #00cc66;
+                border-radius: 5px;
+                padding: 5px 12px;
+            }
+            QPushButton#secondaryBtn:hover { background-color: #0a200a; }
+            QFrame#separator  { color: #00ff88; }
+            QFrame#vSeparator { color: #00ff88; }
+            /* ── Tabs ── */
+            QTabWidget#mainTabs::pane {
+                border: 1px solid #00ff88;
+                background-color: #000000;
+            }
+            QTabBar::tab {
+                background-color: #050505;
+                color: #007744;
+                border: 1px solid #003322;
+                padding: 9px 22px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }
+            QTabBar::tab:selected {
+                background-color: #000000;
+                color: #00ff88;
+                font-weight: bold;
+                border-bottom: 2px solid #00ff88;
+            }
+            QTabBar::tab:hover:!selected { background-color: #0a150a; }
+            /* ── Image groups ── */
+            QGroupBox#imageGroup {
+                background-color: #050505;
+                border: 1px solid #00ff88;
+                border-radius: 8px;
+                margin-top: 10px;
+            }
+            QGroupBox#imageGroup::title { color: #00ff88; }
+            QLabel#imageDisplay {
+                background-color: #0a0a0a;
+                border-radius: 4px;
+                color: #007744;
+            }
+            /* ── Results group ── */
+            QGroupBox#resultsGroup {
+                background-color: #050505;
+                border: 1px solid #00ff88;
+                border-radius: 8px;
+                margin-top: 10px;
+            }
+            QLabel#predictionBadge {
+                background-color: #003322;
+                color: #00ff88;
+                border: 2px solid #00ff88;
+                border-radius: 8px;
+                padding: 8px 20px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QLabel#riskLabel {
+                background-color: #003322;
+                color: #00ff88;
+                border: 1px solid #00ff88;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QLabel#metricHeader { color: #007744; }
+            QLabel#metricValue  { color: #00ff88; font-weight: bold; }
+            QProgressBar#confidenceBar {
+                background-color: #0a0a0a;
+                border: 1px solid #00ff88;
+                border-radius: 4px;
+            }
+            QProgressBar#confidenceBar::chunk {
+                background-color: #00ff88;
+                border-radius: 4px;
+            }
+            /* ── Records tab ── */
+            QLineEdit#searchBar {
+                background-color: #0a0a0a;
+                color: #00ff88;
+                border: 1px solid #00ff88;
+                border-radius: 4px;
+                padding: 5px 8px;
+            }
+            QLabel#statsLabel {
+                color: #007744;
+                font-size: 12px;
+                padding: 2px 0;
+            }
+            QTableWidget#patientTable {
+                background-color: #050505;
+                alternate-background-color: #0a0a0a;
+                gridline-color: transparent;
+                border: 1px solid #00ff88;
+                border-radius: 6px;
+                selection-background-color: #003322;
+                selection-color: #00ff88;
+                color: #e0ffe0;
+            }
+            QHeaderView::section {
+                background-color: #0a0a0a;
+                color: #00ff88;
+                border: none;
+                border-bottom: 2px solid #00ff88;
+                padding: 7px 10px;
+                font-weight: bold;
+            }
+            /* ── Status bar ── */
+            QStatusBar {
+                background-color: #000000;
+                color: #00ff88;
+                font-size: 12px;
+                padding-left: 6px;
+                border-top: 1px solid #00ff88;
+            }
+            /* ── About tab ── */
+            QLabel#aboutTitle {
+                font-size: 22px;
+                font-weight: bold;
+                color: #00ff88;
+            }
+            QLabel#aboutText { color: #e0ffe0; line-height: 1.5; }
         )");
     }
 

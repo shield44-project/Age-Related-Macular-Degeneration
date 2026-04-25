@@ -13,7 +13,7 @@ if __package__:
         get_model_status,
         predict_probabilities,
     )
-    from .preprocessing import preprocess_for_inference
+    from .preprocessing import preprocess_for_inference, is_valid_fundus_image, decode_image_bytes
     from .database import (
         initialize_database,
         insert_patient_record,
@@ -27,7 +27,7 @@ else:
         get_model_status,
         predict_probabilities,
     )
-    from preprocessing import preprocess_for_inference
+    from preprocessing import preprocess_for_inference, is_valid_fundus_image, decode_image_bytes
     from database import (
         initialize_database,
         insert_patient_record,
@@ -127,8 +127,17 @@ def predict():
             print(f"Warning: could not parse patient_age value {patient_age_raw!r}; defaulting to 0.")
 
         image_bytes, image_path = get_request_image()
-        input_tensor, cam_base_rgb = preprocess_for_inference(image_bytes)
 
+        # Validate that the image is a retinal fundus photograph before any
+        # heavy model inference so we can return a clear error immediately.
+        raw_bgr = decode_image_bytes(image_bytes)
+        if not is_valid_fundus_image(raw_bgr):
+            return jsonify({
+                "error": "Invalid Fundus Image. Please enter a valid eye fundus image.",
+                "invalid_fundus": True,
+            }), 400
+
+        input_tensor, cam_base_rgb = preprocess_for_inference(image_bytes)
         probs = predict_probabilities(input_tensor)
         pred_idx = int(probs.argmax())
         prediction = CLASS_NAMES[pred_idx]
