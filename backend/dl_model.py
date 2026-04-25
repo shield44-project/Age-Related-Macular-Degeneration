@@ -289,6 +289,20 @@ def _extract_model_name(model_path: Path, checkpoint: Any) -> str:
     return stem.title() if stem else DEFAULT_MODEL_NAME
 
 
+def _extract_checkpoint_arch(checkpoint: Any) -> str | None:
+    if not isinstance(checkpoint, dict):
+        return None
+    for key in ("arch", "architecture", "model_arch", "backbone"):
+        value = checkpoint.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _build_timm_model(arch: str):
+    return timm.create_model(arch, pretrained=False, num_classes=2).to(DEVICE).eval()
+
+
 def _build_legacy_model():
     return ViTBinaryClassifier().to(DEVICE).eval()
 
@@ -323,6 +337,20 @@ def _try_load_model(model, state_dict: dict, strict: bool = True):
 def _load_real_model(model_path: Path):
     checkpoint = _torch_load_checkpoint(model_path)
     state_dict = _extract_state_dict(checkpoint)
+    model_name = _extract_model_name(model_path, checkpoint)
+    metrics = _extract_metrics(checkpoint)
+    checkpoint_arch = _extract_checkpoint_arch(checkpoint)
+
+    if checkpoint_arch and _HAS_TIMM:
+        try:
+            model = _build_timm_model(checkpoint_arch)
+            model.load_state_dict(state_dict, strict=True)
+            return model, model_name, metrics
+        except Exception as exc:
+            print(
+                f"Could not load {model_path} as timm architecture "
+                f"{checkpoint_arch!r}: {exc}"
+            )
 
     # Pick the architecture that matches the checkpoint head shape first;
     # fall back to the other if it fails. This avoids silently loading the
@@ -344,8 +372,6 @@ def _load_real_model(model_path: Path):
     if model is None:
         raise last_exc if last_exc else RuntimeError("Failed to load model checkpoint.")
 
-    model_name = _extract_model_name(model_path, checkpoint)
-    metrics = _extract_metrics(checkpoint)
     return model, model_name, metrics
 
 

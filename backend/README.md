@@ -87,7 +87,8 @@ Successful response includes:
 - eye_condition: same as prediction
 - confidence: top class probability
 - class_probabilities: map of class -> probability
-- accuracy, precision, recall, f1_score: model metrics
+- accuracy, precision, recall, f1_score: per-image analysis scores derived from the current prediction confidence and probability margin
+- model_metrics: checkpoint / validation-set metrics for the loaded model
 - model_name, model_paths, models_loaded, backup_active
 
 Every prediction is auto-saved to the SQLite database (runtime/patient_records.db).
