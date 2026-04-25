@@ -60,10 +60,62 @@ Displayed on GUI
 ## ⚙️ Building with CMake (Recommended)
 
 ### Prerequisites
-- Qt5 development libraries
+- Qt 5.15+ or Qt 6 development libraries
 - CMake (version 3.16 or higher)
 - C++17/20 compatible compiler
 - Python 3.12+ with virtual environment support
+
+### Windows Prerequisites
+
+Install these once:
+- Visual Studio 2022 with **Desktop development with C++**
+- CMake 3.16 or newer
+- Python 3.12 or newer, with **Add python.exe to PATH** enabled
+- Qt 5.15+ or Qt 6 from the Qt online installer
+
+During Qt installation, select a desktop kit that matches your compiler, for example:
+- `MSVC 2022 64-bit` for Visual Studio builds
+- `MinGW 64-bit` only if you plan to use a MinGW compiler
+
+### Windows Build Steps
+
+Open **Developer PowerShell for VS 2022** in the project root.
+
+Create and prepare the Python environment:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\pip install -r requirements.txt
+```
+
+Configure CMake. Replace the Qt path with the Qt version installed on your PC:
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:\Qt\6.7.3\msvc2022_64"
+```
+
+Build the GUI:
+
+```powershell
+cmake --build build --config Release
+```
+
+Run the GUI:
+
+```powershell
+.\build\bin\Release\AMD_GUI.exe
+```
+
+If your Qt version is Qt 5, use its MSVC folder instead, for example:
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:\Qt\5.15.2\msvc2019_64"
+```
+
+The CMake build automatically runs `windeployqt` when it is available, so the required Qt DLLs are copied beside the executable. The GUI also starts the backend automatically by using `.venv\Scripts\python.exe` when the virtual environment exists.
+
+### Linux Prerequisites
 
 Install system dependencies:
 ```bash
@@ -78,7 +130,7 @@ python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 ```
 
-### Build Steps (Ubuntu/Linux)
+### Linux Build Steps
 
 Check `CMakeLists.txt` and verify your CMake version. To check your installed version, run `cmake --version` in the terminal.
 
@@ -94,6 +146,13 @@ Run the GUI:
 ```
 
 The GUI checks backend health automatically and can start the backend process when needed.
+
+### CMake Notes
+
+- The project supports both Qt5 and Qt6.
+- If CMake cannot find Qt, pass Qt's install folder with `-DCMAKE_PREFIX_PATH=...`.
+- On Windows, use a Qt kit that matches your compiler. MSVC Qt builds should be used with Visual Studio; MinGW Qt builds should be used with MinGW.
+- The executable is written to `build/bin` on Linux and usually `build/bin/Release` or `build/bin/Debug` on Windows multi-config generators.
 
 ### Theme Persistence
 The application automatically saves your theme preference using Qt's QSettings. Your chosen mode (light/dark) will be restored when you restart the application.
@@ -191,4 +250,3 @@ Age-Related Macular Degeneration is one of the leading causes of vision loss in 
 ## 📜 License
 
 Academic Project for Analysis
-

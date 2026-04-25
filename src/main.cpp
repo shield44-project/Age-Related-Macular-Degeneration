@@ -47,6 +47,10 @@
 #include <QKeySequence>
 #include <functional>
 
+#ifndef AMD_PROJECT_SOURCE_DIR
+#define AMD_PROJECT_SOURCE_DIR ""
+#endif
+
 // ---------------------------------------------------------------------------
 // AMD_GUI – main application window
 // ---------------------------------------------------------------------------
@@ -480,9 +484,9 @@ private:
     void startBackendAndWait(const std::function<void()> &onReady) {
         if (backendProcess->state() == QProcess::NotRunning) {
             const QString root = detectProjectRoot();
-            const QString venv = root + "/.venv/bin/python";
-            backendProcess->setProgram(QFile::exists(venv) ? venv : QString("python3"));
-            backendProcess->setArguments({"-m", "backend"});
+            QStringList backendArgs;
+            backendProcess->setProgram(detectPythonExecutable(root, backendArgs));
+            backendProcess->setArguments(backendArgs);
             backendProcess->setWorkingDirectory(root);
             backendProcess->start();
             backendStartedByGui = true;
@@ -1521,12 +1525,54 @@ private:
 
     QString detectProjectRoot() const {
         QDir dir(QCoreApplication::applicationDirPath());
-        if (dir.cdUp() && dir.cdUp() && dir.exists("backend"))
-            return dir.absolutePath();
+        for (int i = 0; i < 8; ++i) {
+            if (dir.exists("backend"))
+                return dir.absolutePath();
+            if (!dir.cdUp())
+                break;
+        }
+
         QDir cwd(QDir::currentPath());
         if (cwd.exists("backend"))
             return cwd.absolutePath();
+
+        QDir sourceDir(QStringLiteral(AMD_PROJECT_SOURCE_DIR));
+        if (sourceDir.exists("backend"))
+            return sourceDir.absolutePath();
+
         return QCoreApplication::applicationDirPath();
+    }
+
+    QString detectPythonExecutable(const QString &projectRoot, QStringList &arguments) const {
+        arguments = QStringList({"-m", "backend"});
+
+#ifdef Q_OS_WIN
+        const QStringList candidates = {
+            projectRoot + "/.venv/Scripts/python.exe",
+            projectRoot + "/venv/Scripts/python.exe",
+            projectRoot + "/.venv/Scripts/python",
+            projectRoot + "/venv/Scripts/python"
+        };
+#else
+        const QStringList candidates = {
+            projectRoot + "/.venv/bin/python",
+            projectRoot + "/venv/bin/python",
+            projectRoot + "/.venv/bin/python3",
+            projectRoot + "/venv/bin/python3"
+        };
+#endif
+
+        for (const QString &candidate : candidates) {
+            if (QFile::exists(candidate))
+                return candidate;
+        }
+
+#ifdef Q_OS_WIN
+        arguments = QStringList({"-3", "-m", "backend"});
+        return "py";
+#else
+        return "python3";
+#endif
     }
 };
 
@@ -1536,4 +1582,3 @@ int main(int argc, char *argv[]) {
     window.show();
     return app.exec();
 }
-
