@@ -18,6 +18,8 @@ if __package__:
         insert_patient_record,
         get_all_patients,
         get_patient_by_id,
+        delete_patient_record,
+        delete_all_patient_records,
     )
 else:
     from dl_model import (
@@ -32,6 +34,8 @@ else:
         insert_patient_record,
         get_all_patients,
         get_patient_by_id,
+        delete_patient_record,
+        delete_all_patient_records,
     )
 
 app = Flask(__name__)
@@ -218,3 +222,21 @@ def patient(patient_id: int):
         return jsonify({"error": f"No patient found with ID {patient_id}."}), 404
     # Explicitly return only the patient record fields.
     return jsonify({"success": True, "patient": result["patient"]})
+
+
+@app.delete("/patients/<int:patient_id>")
+def patient_delete(patient_id: int):
+    """Delete a single patient record by ID."""
+    result = delete_patient_record(patient_id)
+    if not result.get("success"):
+        return jsonify({"error": result.get("message", "Delete failed.")}), 404
+    return jsonify({"success": True, "deleted": result.get("deleted", 1), "id": patient_id})
+
+
+@app.delete("/patients")
+def patients_clear():
+    """Delete every patient record. Intended for the GUI's 'Clear All' action."""
+    result = delete_all_patient_records()
+    if not result.get("success"):
+        return jsonify({"error": result.get("message", "Clear failed.")}), 500
+    return jsonify({"success": True, "deleted": result.get("deleted", 0)})

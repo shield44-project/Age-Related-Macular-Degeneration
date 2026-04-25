@@ -228,6 +228,37 @@ def get_patient_by_id(patient_id: int) -> Dict[str, Any]:
         }
 
 
+def delete_patient_record(patient_id: int) -> Dict[str, Any]:
+    """Delete a patient record by ID. Returns success flag and message."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM patient WHERE id = ?", (patient_id,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        if deleted == 0:
+            return {"success": False, "message": f"No patient found with ID {patient_id}"}
+        return {"success": True, "message": f"Deleted patient record {patient_id}", "deleted": deleted}
+    except Exception as e:
+        return {"success": False, "message": f"Error deleting patient: {str(e)}"}
+
+
+def delete_all_patient_records() -> Dict[str, Any]:
+    """Wipe every record from the patient table. Useful for resetting demo data."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM patient")
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return {"success": True, "deleted": deleted}
+    except Exception as e:
+        return {"success": False, "message": f"Error clearing patients: {str(e)}"}
+
+
+
 def update_patient_record(
     patient_id: int,
     **kwargs

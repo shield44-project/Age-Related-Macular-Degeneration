@@ -37,6 +37,14 @@
 #include <QStatusBar>
 #include <QFont>
 #include <QColor>
+#include <QDialog>
+#include <QScrollArea>
+#include <QTextStream>
+#include <QDateTime>
+#include <QMenu>
+#include <QToolButton>
+#include <QShortcut>
+#include <QKeySequence>
 #include <functional>
 
 // ---------------------------------------------------------------------------
@@ -70,6 +78,13 @@ public:
     QTableWidget *patientTable;
     QLineEdit    *searchInput;
     QLabel       *recordsStatsLabel;
+    QLabel       *statTotalValue;
+    QLabel       *statAMDValue;
+    QLabel       *statNormalValue;
+    QLabel       *statAvgConfValue;
+    QPushButton  *deleteBtn;
+    QPushButton  *exportBtn;
+    QLabel       *recordsEmptyLabel;
 
     // ── State ────────────────────────────────────────────────────────────────
     bool                  isDarkMode;
@@ -283,49 +298,126 @@ private:
         resultsLayout->addLayout(metricsGrid);
 
         analysisLayout->addWidget(resultsGrp);
-        tabWidget->addTab(analysisTab, "Analysis");
+        tabWidget->addTab(analysisTab, " Analysis ");
 
-        // ── TAB 2: Patient Records ─────────────────────────────────────────
+        // ── TAB 2: History ─────────────────────────────────────────
         QWidget     *recordsTab    = new QWidget();
         QVBoxLayout *recordsLayout = new QVBoxLayout(recordsTab);
         recordsLayout->setContentsMargins(16, 16, 16, 16);
-        recordsLayout->setSpacing(10);
+        recordsLayout->setSpacing(12);
 
-        // Control bar: search + refresh
+        // Stat tile row: Total / AMD / Normal / Avg confidence
+        auto makeStatTile = [&](const QString &caption, QLabel *&valueLabel, const QString &accentObj) {
+            QFrame *tile = new QFrame();
+            tile->setObjectName("statTile");
+            tile->setFrameShape(QFrame::NoFrame);
+            QVBoxLayout *tl = new QVBoxLayout(tile);
+            tl->setContentsMargins(16, 12, 16, 12);
+            tl->setSpacing(4);
+
+            QLabel *cap = new QLabel(caption);
+            cap->setObjectName("statCaption");
+            tl->addWidget(cap);
+
+            valueLabel = new QLabel("0");
+            valueLabel->setObjectName(accentObj);
+            tl->addWidget(valueLabel);
+            return tile;
+        };
+
+        QHBoxLayout *statsRow = new QHBoxLayout();
+        statsRow->setSpacing(12);
+        statsRow->addWidget(makeStatTile("TOTAL SCANS",     statTotalValue,   "statValue"));
+        statsRow->addWidget(makeStatTile("AMD DETECTED",    statAMDValue,     "statValueAMD"));
+        statsRow->addWidget(makeStatTile("NORMAL",          statNormalValue,  "statValueNormal"));
+        statsRow->addWidget(makeStatTile("AVG CONFIDENCE",  statAvgConfValue, "statValue"));
+        recordsLayout->addLayout(statsRow);
+
+        // Toolbar row: search + actions
         QHBoxLayout *ctrlRow = new QHBoxLayout();
+        ctrlRow->setSpacing(8);
+
         searchInput = new QLineEdit();
-        searchInput->setPlaceholderText("Search by patient name…");
+        searchInput->setPlaceholderText("Search by patient name, ID, or diagnosis…");
         searchInput->setObjectName("searchBar");
-        ctrlRow->addWidget(searchInput);
+        searchInput->setClearButtonEnabled(true);
+        ctrlRow->addWidget(searchInput, 1);
 
         QPushButton *refreshBtn = new QPushButton("Refresh");
         refreshBtn->setObjectName("secondaryBtn");
-        refreshBtn->setMaximumWidth(120);
+        refreshBtn->setMinimumHeight(36);
+        refreshBtn->setMinimumWidth(96);
         ctrlRow->addWidget(refreshBtn);
+
+        exportBtn = new QPushButton("Export CSV");
+        exportBtn->setObjectName("secondaryBtn");
+        exportBtn->setMinimumHeight(36);
+        exportBtn->setMinimumWidth(110);
+        ctrlRow->addWidget(exportBtn);
+
+        deleteBtn = new QPushButton("Delete Selected");
+        deleteBtn->setObjectName("dangerBtn");
+        deleteBtn->setMinimumHeight(36);
+        deleteBtn->setMinimumWidth(140);
+        deleteBtn->setEnabled(false);
+        ctrlRow->addWidget(deleteBtn);
+
         recordsLayout->addLayout(ctrlRow);
 
-        // Stats bar
-        recordsStatsLabel = new QLabel("No records loaded.");
+        // Stats summary label (text breakdown)
+        recordsStatsLabel = new QLabel("No records yet — run a scan from the Analysis tab to populate this list.");
         recordsStatsLabel->setObjectName("statsLabel");
         recordsLayout->addWidget(recordsStatsLabel);
+
+        // Stack the table + an empty-state hint inside a frame
+        QFrame *tableFrame = new QFrame();
+        tableFrame->setObjectName("tableFrame");
+        QVBoxLayout *tableLayout = new QVBoxLayout(tableFrame);
+        tableLayout->setContentsMargins(0, 0, 0, 0);
+        tableLayout->setSpacing(0);
 
         // Patient table
         patientTable = new QTableWidget();
         patientTable->setObjectName("patientTable");
-        patientTable->setColumnCount(6);
-        patientTable->setHorizontalHeaderLabels({"ID", "Patient Name", "Age", "Diagnosis", "Confidence", "Date"});
+        patientTable->setColumnCount(7);
+        patientTable->setHorizontalHeaderLabels(
+            {"ID", "Patient Name", "Age", "Diagnosis", "Confidence", "Date", ""}
+        );
+        patientTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
         patientTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        patientTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         patientTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+        patientTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Fixed);
         patientTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+        patientTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Fixed);
+        patientTable->horizontalHeader()->setDefaultSectionSize(120);
+        patientTable->setColumnWidth(4, 170);
+        patientTable->setColumnWidth(6, 50);
         patientTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        patientTable->setSelectionMode(QAbstractItemView::SingleSelection);
         patientTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
         patientTable->setSortingEnabled(true);
         patientTable->verticalHeader()->setVisible(false);
+        patientTable->verticalHeader()->setDefaultSectionSize(40);
         patientTable->setAlternatingRowColors(true);
         patientTable->setShowGrid(false);
-        recordsLayout->addWidget(patientTable);
+        patientTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+        patientTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+        patientTable->setFocusPolicy(Qt::StrongFocus);
+        patientTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        tableLayout->addWidget(patientTable);
 
-        tabWidget->addTab(recordsTab, "Patient Records");
+        // Empty-state overlay (shown when there are zero records)
+        recordsEmptyLabel = new QLabel("No patient records yet.\nUpload a fundus image from the Analysis tab to create your first record.");
+        recordsEmptyLabel->setObjectName("emptyState");
+        recordsEmptyLabel->setAlignment(Qt::AlignCenter);
+        recordsEmptyLabel->setWordWrap(true);
+        recordsEmptyLabel->setVisible(false);
+        tableLayout->addWidget(recordsEmptyLabel);
+
+        recordsLayout->addWidget(tableFrame, 1);
+
+        tabWidget->addTab(recordsTab, " History ");
 
         root->addWidget(tabWidget, 1);
 
@@ -336,8 +428,21 @@ private:
         connect(uploadBtn,  &QPushButton::clicked,       this, &AMD_GUI::uploadImage);
         connect(themeBtn,   &QPushButton::clicked,       this, &AMD_GUI::toggleTheme);
         connect(refreshBtn, &QPushButton::clicked,       this, &AMD_GUI::refreshPatientRecords);
+        connect(exportBtn,  &QPushButton::clicked,       this, &AMD_GUI::exportRecordsCsv);
+        connect(deleteBtn,  &QPushButton::clicked,       this, &AMD_GUI::deleteSelectedRecord);
         connect(searchInput, &QLineEdit::textChanged,    this, &AMD_GUI::filterRecords);
         connect(patientTable, &QTableWidget::cellClicked, this, &AMD_GUI::onRecordSelected);
+        connect(patientTable, &QTableWidget::cellDoubleClicked,
+                this, &AMD_GUI::onRecordDoubleClicked);
+        connect(patientTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+            deleteBtn->setEnabled(!patientTable->selectedItems().isEmpty());
+        });
+        connect(patientTable, &QTableWidget::customContextMenuRequested,
+                this, &AMD_GUI::showRecordContextMenu);
+
+        // Keyboard shortcuts on the records tab
+        auto *delShortcut = new QShortcut(QKeySequence(Qt::Key_Delete), patientTable);
+        connect(delShortcut, &QShortcut::activated, this, &AMD_GUI::deleteSelectedRecord);
     }
 
     // ── Slots / helpers ──────────────────────────────────────────────────────
@@ -627,9 +732,17 @@ private:
 
     void populateTable(const QJsonArray &patients) {
         patientTable->setSortingEnabled(false);
+        patientTable->clearContents();
         patientTable->setRowCount(0);
 
         int amdCount = 0, normalCount = 0;
+        double confSum = 0.0;
+        int    confN   = 0;
+
+        // Theme-aware diagnosis swatches: chosen to be readable on both
+        // pitch-black and bright-white backgrounds.
+        const QColor amdColor("#ef4444");      // red-500
+        const QColor normalColor("#22c55e");   // green-500
 
         for (const QJsonValue &v : patients) {
             if (!v.isObject()) continue;
@@ -637,59 +750,270 @@ private:
             const int row = patientTable->rowCount();
             patientTable->insertRow(row);
 
-            auto cell = [&](int col, const QString &text) {
-                patientTable->setItem(row, col, new QTableWidgetItem(text));
+            auto centeredItem = [&](const QString &text) {
+                auto *it = new QTableWidgetItem(text);
+                it->setTextAlignment(Qt::AlignCenter);
+                return it;
+            };
+            auto leftItem = [&](const QString &text) {
+                auto *it = new QTableWidgetItem(text);
+                it->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+                return it;
             };
 
-            cell(0, QString::number(p.value("id").toInt()));
-            cell(1, p.value("name").toString("—"));
+            const int patientId = p.value("id").toInt();
+            QTableWidgetItem *idItem = centeredItem(QString::number(patientId));
+            // Sort numerically by ID, not lexicographically.
+            idItem->setData(Qt::DisplayRole, patientId);
+            idItem->setData(Qt::UserRole, p.value("image_path").toString());
+            patientTable->setItem(row, 0, idItem);
+
+            patientTable->setItem(row, 1, leftItem(p.value("name").toString("Unknown")));
 
             const int age = p.value("age").toInt(0);
-            cell(2, age > 0 ? QString::number(age) : "—");
+            patientTable->setItem(row, 2, centeredItem(age > 0 ? QString::number(age) : "—"));
 
             const QString diag = p.value("prediction").toString("—");
-            QTableWidgetItem *diagItem = new QTableWidgetItem(diag);
+            QTableWidgetItem *diagItem = centeredItem(diag);
+            QFont diagFont = diagItem->font();
+            diagFont.setBold(true);
+            diagFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.5);
+            diagItem->setFont(diagFont);
             if (diag == "AMD") {
-                diagItem->setForeground(QColor("#e74c3c"));
-                QFont f = diagItem->font(); f.setBold(true); diagItem->setFont(f);
+                diagItem->setForeground(amdColor);
                 ++amdCount;
             } else if (diag == "Normal") {
-                diagItem->setForeground(QColor("#27ae60"));
-                QFont f = diagItem->font(); f.setBold(true); diagItem->setFont(f);
+                diagItem->setForeground(normalColor);
                 ++normalCount;
             }
             patientTable->setItem(row, 3, diagItem);
 
             const double conf = p.value("confidence").toDouble(0.0);
-            cell(4, conf > 0.0 ? QString::number(conf * 100.0, 'f', 1) + "%" : "—");
-            cell(5, p.value("date").toString("—"));
+            QString confText = conf > 0.0
+                ? QString::number(conf * 100.0, 'f', 1) + " %"
+                : "—";
+            QTableWidgetItem *confItem = centeredItem(confText);
+            // Numeric sort key so the column sorts by value, not string.
+            confItem->setData(Qt::UserRole + 1, conf);
+            // Tint the confidence value to mirror the diagnosis colour, faded
+            // when confidence is low so the user gets a quick visual sense.
+            if (conf > 0.0) {
+                const QColor base = (diag == "AMD") ? amdColor
+                                  : (diag == "Normal") ? normalColor
+                                  : QColor("#9ca3af");
+                QColor tinted = base;
+                tinted.setAlphaF(0.55 + 0.45 * std::min(1.0, std::max(0.0, conf)));
+                confItem->setForeground(tinted);
+                if (conf >= 0.85) {
+                    QFont f = confItem->font(); f.setBold(true); confItem->setFont(f);
+                }
+                confSum += conf;
+                ++confN;
+            }
+            patientTable->setItem(row, 4, confItem);
 
-            // Store image path in the ID cell for click-to-load
-            patientTable->item(row, 0)->setData(Qt::UserRole, p.value("image_path").toString());
+            patientTable->setItem(row, 5, centeredItem(p.value("date").toString("—")));
+
+            // Final column: an "open image" affordance, only when we have a path.
+            const QString imgPath = p.value("image_path").toString();
+            QTableWidgetItem *openItem = centeredItem(imgPath.isEmpty() ? "" : "↗");
+            openItem->setToolTip(imgPath.isEmpty() ? "" : "Double-click row or click ↗ to view full image");
+            openItem->setData(Qt::UserRole, imgPath);
+            patientTable->setItem(row, 6, openItem);
         }
 
         patientTable->setSortingEnabled(true);
 
-        // Update stats bar and sidebar scan count
+        // Stat tiles & sidebar counter
         const int total = patients.size();
-        recordsStatsLabel->setText(
-            QString("Total: %1 scan(s)   |   AMD: %2   |   Normal: %3")
-                .arg(total).arg(amdCount).arg(normalCount)
+        statTotalValue->setText(QString::number(total));
+        statAMDValue->setText(QString::number(amdCount));
+        statNormalValue->setText(QString::number(normalCount));
+        statAvgConfValue->setText(
+            confN > 0 ? QString::number((confSum / confN) * 100.0, 'f', 1) + " %"
+                      : "—"
         );
-        scanCountLabel->setText(QString("Total scans: %1").arg(total));
+
+        recordsStatsLabel->setText(
+            total == 0
+                ? QString("No records yet — run a scan from the Analysis tab to populate this list.")
+                : QString("Showing %1 record(s) — %2 AMD, %3 Normal.")
+                      .arg(total).arg(amdCount).arg(normalCount)
+        );
+        scanCountLabel->setText(QString("Total scans: %1").arg(allPatients.size()));
+
+        // Empty-state overlay
+        const bool empty = (total == 0);
+        recordsEmptyLabel->setVisible(empty);
+        patientTable->setVisible(!empty);
+
+        deleteBtn->setEnabled(!patientTable->selectedItems().isEmpty());
     }
 
-    void onRecordSelected(int row, int) {
+    void onRecordSelected(int row, int col) {
         QTableWidgetItem *idItem = patientTable->item(row, 0);
         if (!idItem) return;
         const QString imgPath = idItem->data(Qt::UserRole).toString();
+
+        // Clicking the "↗" cell opens the full-size image preview directly.
+        if (col == 6 && !imgPath.isEmpty() && QFile::exists(imgPath)) {
+            openFullImageDialog(imgPath, patientTable->item(row, 1)->text());
+            return;
+        }
+
         if (!imgPath.isEmpty() && QFile::exists(imgPath)) {
             fundusLabel->setPixmap(QPixmap(imgPath));
-            tabWidget->setCurrentIndex(0);   // switch to Analysis tab
             statusBar()->showMessage(
                 "Loaded historical image for: " + patientTable->item(row, 1)->text()
             );
         }
+    }
+
+    void onRecordDoubleClicked(int row, int /*col*/) {
+        QTableWidgetItem *idItem = patientTable->item(row, 0);
+        if (!idItem) return;
+        const QString imgPath = idItem->data(Qt::UserRole).toString();
+        if (imgPath.isEmpty() || !QFile::exists(imgPath)) {
+            statusBar()->showMessage("No stored image found on disk for this record.");
+            return;
+        }
+        openFullImageDialog(imgPath, patientTable->item(row, 1)->text());
+    }
+
+    void openFullImageDialog(const QString &imgPath, const QString &title) {
+        QDialog *dlg = new QDialog(this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->setWindowTitle("Fundus Image — " + title);
+        dlg->resize(820, 820);
+
+        QVBoxLayout *lay = new QVBoxLayout(dlg);
+        lay->setContentsMargins(8, 8, 8, 8);
+
+        QScrollArea *scroll = new QScrollArea(dlg);
+        scroll->setWidgetResizable(true);
+        QLabel *imgLbl = new QLabel();
+        imgLbl->setAlignment(Qt::AlignCenter);
+        QPixmap pix(imgPath);
+        if (!pix.isNull())
+            imgLbl->setPixmap(pix.scaled(800, 800, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        else
+            imgLbl->setText("Failed to load image:\n" + imgPath);
+        scroll->setWidget(imgLbl);
+        lay->addWidget(scroll, 1);
+
+        QPushButton *closeBtn = new QPushButton("Close");
+        closeBtn->setObjectName("secondaryBtn");
+        connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::accept);
+        lay->addWidget(closeBtn, 0, Qt::AlignRight);
+
+        dlg->show();
+    }
+
+    void showRecordContextMenu(const QPoint &pos) {
+        const int row = patientTable->rowAt(pos.y());
+        if (row < 0) return;
+        patientTable->selectRow(row);
+
+        QMenu menu(patientTable);
+        QAction *aLoad   = menu.addAction("Load image into Analysis tab");
+        QAction *aOpen   = menu.addAction("Open full image…");
+        menu.addSeparator();
+        QAction *aDelete = menu.addAction("Delete record");
+
+        QAction *chosen = menu.exec(patientTable->viewport()->mapToGlobal(pos));
+        if (!chosen) return;
+
+        QTableWidgetItem *idItem = patientTable->item(row, 0);
+        const QString imgPath = idItem ? idItem->data(Qt::UserRole).toString() : QString();
+
+        if (chosen == aLoad && !imgPath.isEmpty() && QFile::exists(imgPath)) {
+            fundusLabel->setPixmap(QPixmap(imgPath));
+            tabWidget->setCurrentIndex(0);
+            statusBar()->showMessage("Loaded historical image for: " + patientTable->item(row, 1)->text());
+        } else if (chosen == aOpen && !imgPath.isEmpty() && QFile::exists(imgPath)) {
+            openFullImageDialog(imgPath, patientTable->item(row, 1)->text());
+        } else if (chosen == aDelete) {
+            deleteSelectedRecord();
+        }
+    }
+
+    void deleteSelectedRecord() {
+        const int row = patientTable->currentRow();
+        if (row < 0) return;
+        QTableWidgetItem *idItem = patientTable->item(row, 0);
+        if (!idItem) return;
+        const int patientId = idItem->data(Qt::DisplayRole).toInt();
+        const QString name  = patientTable->item(row, 1) ? patientTable->item(row, 1)->text() : QString::number(patientId);
+
+        QMessageBox::StandardButton reply = QMessageBox::question(
+            this,
+            "Delete patient record",
+            QString("Permanently delete the record for \"%1\" (ID %2)?\nThis cannot be undone.")
+                .arg(name).arg(patientId),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No
+        );
+        if (reply != QMessageBox::Yes) return;
+
+        QNetworkRequest req(QUrl(QString("http://127.0.0.1:5000/patients/%1").arg(patientId)));
+        QNetworkReply *reply2 = networkManager->sendCustomRequest(req, "DELETE");
+        connect(reply2, &QNetworkReply::finished, this, [this, reply2, name, patientId]() {
+            const bool ok = (reply2->error() == QNetworkReply::NoError);
+            reply2->deleteLater();
+            if (ok) {
+                statusBar()->showMessage(QString("Deleted record %1 (%2).").arg(patientId).arg(name));
+                refreshPatientRecords();
+            } else {
+                QMessageBox::warning(this, "Delete failed",
+                                     "Could not delete the record. Is the backend running?");
+            }
+        });
+    }
+
+    void exportRecordsCsv() {
+        if (allPatients.isEmpty()) {
+            QMessageBox::information(this, "Nothing to export", "There are no patient records to export yet.");
+            return;
+        }
+
+        const QString defaultName = "amd_patient_records_" +
+            QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".csv";
+        const QString path = QFileDialog::getSaveFileName(
+            this, "Export patient records", defaultName, "CSV files (*.csv)"
+        );
+        if (path.isEmpty()) return;
+
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QMessageBox::warning(this, "Export failed", "Could not open the file for writing.");
+            return;
+        }
+
+        QTextStream out(&f);
+        out << "id,name,age,diagnosis,confidence_pct,date,image_path\n";
+
+        auto csvField = [](const QString &v) {
+            QString s = v;
+            s.replace('"', "\"\"");
+            if (s.contains(',') || s.contains('\n') || s.contains('"'))
+                s = '"' + s + '"';
+            return s;
+        };
+
+        for (const QJsonObject &p : allPatients) {
+            const QString conf = p.value("confidence").isDouble()
+                ? QString::number(p.value("confidence").toDouble() * 100.0, 'f', 2)
+                : QString();
+            out << p.value("id").toInt()                       << ','
+                << csvField(p.value("name").toString())        << ','
+                << p.value("age").toInt()                      << ','
+                << csvField(p.value("prediction").toString())  << ','
+                << conf                                        << ','
+                << csvField(p.value("date").toString())        << ','
+                << csvField(p.value("image_path").toString())  << '\n';
+        }
+        f.close();
+        statusBar()->showMessage("Exported " + QString::number(allPatients.size()) + " record(s) to " + path);
     }
 
     // ── Theme ────────────────────────────────────────────────────────────────
@@ -847,23 +1171,87 @@ private:
                 font-size: 12px;
                 padding: 2px 0;
             }
+            QFrame#tableFrame {
+                background-color: #ffffff;
+                border: 1px solid #e3e6eb;
+                border-radius: 10px;
+            }
             QTableWidget#patientTable {
                 background-color: #ffffff;
-                alternate-background-color: #f9fafb;
+                alternate-background-color: #f4f6f9;
                 gridline-color: transparent;
-                border: 1px solid #e3e6eb;
-                border-radius: 8px;
-                selection-background-color: #e5e7eb;
-                selection-color: #1a1f2b;
+                border: none;
+                border-radius: 10px;
+                selection-background-color: #dbeafe;
+                selection-color: #0f172a;
                 color: #1a1f2b;
+            }
+            QTableWidget#patientTable::item {
+                padding: 8px 10px;
+                border: none;
+            }
+            QTableWidget#patientTable::item:selected {
+                background-color: #dbeafe;
+                color: #0f172a;
+            }
+            QTableWidget#patientTable::item:hover {
+                background-color: #eef2f7;
             }
             QHeaderView::section {
                 background-color: #ffffff;
                 color: #1a1f2b;
                 border: none;
                 border-bottom: 1px solid #e3e6eb;
-                padding: 9px 12px;
+                padding: 11px 12px;
                 font-weight: 700;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }
+            QFrame#statTile {
+                background-color: #ffffff;
+                border: 1px solid #e3e6eb;
+                border-radius: 10px;
+            }
+            QLabel#statCaption {
+                color: #6b7280;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.4px;
+            }
+            QLabel#statValue {
+                color: #0f172a;
+                font-size: 22px;
+                font-weight: 700;
+            }
+            QLabel#statValueAMD {
+                color: #dc2626;
+                font-size: 22px;
+                font-weight: 700;
+            }
+            QLabel#statValueNormal {
+                color: #16a34a;
+                font-size: 22px;
+                font-weight: 700;
+            }
+            QLabel#emptyState {
+                color: #6b7280;
+                font-size: 13px;
+                padding: 60px 20px;
+                background: transparent;
+            }
+            QPushButton#dangerBtn {
+                background-color: #ffffff;
+                color: #dc2626;
+                border: 1px solid #fecaca;
+                border-radius: 8px;
+                padding: 8px 14px;
+                font-weight: 600;
+            }
+            QPushButton#dangerBtn:hover  { background-color: #fef2f2; }
+            QPushButton#dangerBtn:pressed{ background-color: #fee2e2; }
+            QPushButton#dangerBtn:disabled {
+                color: #d1d5db; border-color: #e5e7eb; background-color: #f9fafb;
             }
             QStatusBar {
                 background-color: #ffffff;
@@ -1026,24 +1414,99 @@ private:
                 font-size: 12px;
                 padding: 2px 0;
             }
+            QFrame#tableFrame {
+                background-color: #050505;
+                border: 1px solid #1f1f1f;
+                border-radius: 10px;
+            }
             QTableWidget#patientTable {
-                background-color: #000000;
-                alternate-background-color: #0a0a0a;
+                background-color: #050505;
+                alternate-background-color: #111111;
                 gridline-color: transparent;
-                border: 1px solid #1a1a1a;
-                border-radius: 8px;
-                selection-background-color: #1a1a1a;
+                border: none;
+                border-radius: 10px;
+                selection-background-color: #1f2937;
                 selection-color: #ffffff;
                 color: #e5e7eb;
             }
+            QTableWidget#patientTable::item {
+                padding: 8px 10px;
+                border: none;
+                color: #e5e7eb;
+            }
+            QTableWidget#patientTable::item:selected {
+                background-color: #1f2937;
+                color: #ffffff;
+            }
+            QTableWidget#patientTable::item:hover {
+                background-color: #161616;
+            }
             QHeaderView::section {
-                background-color: #000000;
+                background-color: #050505;
                 color: #ffffff;
                 border: none;
-                border-bottom: 1px solid #1a1a1a;
-                padding: 9px 12px;
+                border-bottom: 1px solid #1f1f1f;
+                padding: 11px 12px;
+                font-weight: 700;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }
+            QFrame#statTile {
+                background-color: #0a0a0a;
+                border: 1px solid #1f1f1f;
+                border-radius: 10px;
+            }
+            QLabel#statCaption {
+                color: #6b7280;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.4px;
+            }
+            QLabel#statValue {
+                color: #ffffff;
+                font-size: 22px;
                 font-weight: 700;
             }
+            QLabel#statValueAMD {
+                color: #ef4444;
+                font-size: 22px;
+                font-weight: 700;
+            }
+            QLabel#statValueNormal {
+                color: #22c55e;
+                font-size: 22px;
+                font-weight: 700;
+            }
+            QLabel#emptyState {
+                color: #6b7280;
+                font-size: 13px;
+                padding: 60px 20px;
+                background: transparent;
+            }
+            QPushButton#dangerBtn {
+                background-color: #0a0a0a;
+                color: #f87171;
+                border: 1px solid #3f1d1d;
+                border-radius: 8px;
+                padding: 8px 14px;
+                font-weight: 600;
+            }
+            QPushButton#dangerBtn:hover  { background-color: #1a0e0e; border-color: #7f1d1d; }
+            QPushButton#dangerBtn:pressed{ background-color: #2b0e0e; }
+            QPushButton#dangerBtn:disabled {
+                color: #4b5563; border-color: #1a1a1a; background-color: #050505;
+            }
+            QMenu {
+                background-color: #0a0a0a;
+                color: #e5e7eb;
+                border: 1px solid #1f1f1f;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item { padding: 6px 18px; border-radius: 4px; }
+            QMenu::item:selected { background-color: #1f2937; color: #ffffff; }
+            QMenu::separator { height: 1px; background: #1f1f1f; margin: 4px 6px; }
             QStatusBar {
                 background-color: #000000;
                 color: #9ca3af;
