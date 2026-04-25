@@ -12,3 +12,9 @@ grad-cam
 albumentations
 Flask
 timm
+flask
+flask-cors
+numpy
+opencv-python-headless
+pillow
+requests
