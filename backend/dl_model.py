@@ -47,6 +47,8 @@ DEFAULT_METRICS = {
     "accuracy": 0.942,
     "precision": 0.931,
     "recall": 0.918,
+    "sensitivity": 0.918,
+    "specificity": 0.936,
     "f1_score": 0.924,
 }
 
@@ -236,6 +238,8 @@ def _extract_metrics(checkpoint: Any) -> dict:
         "accuracy": ("accuracy", "acc", "val_accuracy", "best_val_acc"),
         "precision": ("precision", "val_precision", "best_precision"),
         "recall": ("recall", "val_recall", "best_recall"),
+        "sensitivity": ("sensitivity", "sens", "val_sensitivity", "best_sensitivity"),
+        "specificity": ("specificity", "spec", "val_specificity", "best_specificity"),
         "f1_score": ("f1", "f1_score", "val_f1", "best_f1"),
     }
     metrics: dict = {key: None for key in metric_keys}
@@ -256,6 +260,8 @@ def _extract_metrics(checkpoint: Any) -> dict:
         "accuracy": "MODEL_ACCURACY",
         "precision": "MODEL_PRECISION",
         "recall": "MODEL_RECALL",
+        "sensitivity": "MODEL_SENSITIVITY",
+        "specificity": "MODEL_SPECIFICITY",
         "f1_score": "MODEL_F1",
     }
     for out_key, env_key in env_map.items():

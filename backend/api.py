@@ -77,6 +77,11 @@ def calculate_image_metrics(probs, pred_idx: int) -> dict:
     # Recall is slightly more conservative for uncertain positive/negative
     # calls, but still follows the current image probability distribution.
     recall = clamp_metric(confidence * (0.76 + 0.24 * confidence))
+    sensitivity = recall
+
+    # Specificity estimates how confidently the model rules out the opposite
+    # class. Strong margins produce a higher score; close calls stay lower.
+    specificity = clamp_metric(confidence * (0.74 + 0.26 * margin))
 
     f1_score = (
         2.0 * precision * recall / (precision + recall)
@@ -88,6 +93,8 @@ def calculate_image_metrics(probs, pred_idx: int) -> dict:
         "accuracy": accuracy,
         "precision": precision,
         "recall": recall,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
         "f1_score": clamp_metric(f1_score),
     }
 
@@ -228,6 +235,8 @@ def predict():
                 "accuracy": image_metrics["accuracy"],
                 "precision": image_metrics["precision"],
                 "recall": image_metrics["recall"],
+                "sensitivity": image_metrics["sensitivity"],
+                "specificity": image_metrics["specificity"],
                 "f1_score": image_metrics["f1_score"],
                 "model_metrics": model_status["metrics"],
                 "class_probabilities": {

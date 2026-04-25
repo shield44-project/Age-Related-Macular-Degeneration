@@ -76,6 +76,8 @@ public:
     QLabel       *accuracyLabel;
     QLabel       *precisionLabel;
     QLabel       *recallLabel;
+    QLabel       *sensitivityLabel;
+    QLabel       *specificityLabel;
     QLabel       *f1Label;
 
     // ── Records tab ─────────────────────────────────────────────────────────
@@ -298,7 +300,9 @@ private:
         addMetricPair(0, 1, "Accuracy:",  accuracyLabel);
         addMetricPair(1, 0, "Precision:", precisionLabel);
         addMetricPair(1, 1, "Recall:",    recallLabel);
-        addMetricPair(2, 0, "F1 Score:",  f1Label);
+        addMetricPair(2, 0, "Sensitivity:", sensitivityLabel);
+        addMetricPair(2, 1, "Specificity:", specificityLabel);
+        addMetricPair(3, 0, "F1 Score:",  f1Label);
         resultsLayout->addLayout(metricsGrid);
 
         analysisLayout->addWidget(resultsGrp);
@@ -681,6 +685,8 @@ private:
         accuracyLabel ->setText(fmt("accuracy"));
         precisionLabel->setText(fmt("precision"));
         recallLabel   ->setText(fmt("recall"));
+        sensitivityLabel->setText(fmt("sensitivity"));
+        specificityLabel->setText(fmt("specificity"));
         f1Label       ->setText(fmt("f1_score"));
 
         // ── CAM image ─────────────────────────────────────────────────────
