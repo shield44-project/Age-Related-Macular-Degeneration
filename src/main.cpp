@@ -37,7 +37,112 @@
 #include <QStatusBar>
 #include <QFont>
 #include <QColor>
+#include <QPainter>
+#include <QRectF>
 #include <functional>
+#include <cstdlib>
+
+// ---------------------------------------------------------------------------
+// MatrixSidebar – sidebar QWidget with animated Matrix-rain background.
+// In Neo mode the paintEvent draws a falling-character rain using a
+// deterministic hash so no extra random header is needed.  In light/dark
+// mode it simply fills with the supplied background colour.
+// ---------------------------------------------------------------------------
+class MatrixSidebar : public QWidget {
+    struct Drop { int x, top, len, speed; };
+    QVector<Drop> drops;
+    QTimer       *rainTimer;
+    bool          neonActive = false;
+    QColor        bgColor{0x05, 0x05, 0x05};
+    static constexpr int CS = 14;   // cell size in pixels
+
+    // Deterministic integer hash – avoids needing QRandomGenerator.
+    static int ph(int v) noexcept {
+        v = ((v >> 16) ^ v) * 0x45d9f3b;
+        v = ((v >> 16) ^ v) * 0x45d9f3b;
+        v = (v >> 16) ^ v;
+        return v & 0x7fffffff;
+    }
+
+public:
+    explicit MatrixSidebar(QWidget *parent = nullptr) : QWidget(parent) {
+        setAttribute(Qt::WA_OpaquePaintEvent);
+        setAutoFillBackground(false);
+        rainTimer = new QTimer(this);
+        connect(rainTimer, &QTimer::timeout, this, [this]() { advance(); update(); });
+    }
+
+    void setNeonMode(bool on, const QColor &bg = QColor(0, 0, 0)) {
+        neonActive = on;
+        bgColor    = on ? QColor(0, 0, 0) : bg;
+        if (on) { initDrops(); rainTimer->start(85); }
+        else    { rainTimer->stop(); update(); }
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *e) override {
+        QWidget::resizeEvent(e);
+        if (neonActive) initDrops();
+    }
+
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.fillRect(rect(), bgColor);
+        if (!neonActive || drops.isEmpty()) return;
+
+        // Matrix character set (printable ASCII + a few katakana look-alikes).
+        static const QString CHARS = "01アイウエオABCDEF!@#$%0110";
+
+        QFont f("Courier New");
+        f.setPixelSize(CS - 2);
+        f.setBold(false);
+        p.setFont(f);
+
+        for (const Drop &d : drops) {
+            for (int i = 0; i < d.len; ++i) {
+                const int y = d.top - i * CS;
+                if (y < -CS || y > height()) continue;
+
+                const int brightness = (i == 0) ? 255 : 40 + 160 * (d.len - i) / d.len;
+                const int alpha      = (i == 0) ? 255 : 70  + 150 * (d.len - i) / d.len;
+                // Head character is bright white-green; trail fades to dark green.
+                const int r = (i == 0) ? 180 : 0;
+                p.setPen(QColor(r, brightness, i == 0 ? 80 : 15, alpha));
+
+                const int ci = ph(d.x * 7 + (y / CS + 999) * 13 + i * 31) % CHARS.length();
+                p.drawText(d.x + 1, y, QString(CHARS[ci]));
+            }
+        }
+    }
+
+private:
+    void initDrops() {
+        drops.clear();
+        if (width() <= 0 || height() <= 0) return;
+        const int n = (width() + CS - 1) / CS;
+        drops.reserve(n);
+        for (int i = 0; i < n; ++i) {
+            const int len   = 5 + ph(i * 137 + 7)  % 15;
+            const int speed = 1 + ph(i * 31  + 11) % 2;
+            const int top   = ph(i * 97 + 3) % (height() + len * CS) - len * CS;
+            drops.push_back({i * CS, top, len, speed});
+        }
+    }
+
+    void advance() {
+        const int H = height();
+        for (int i = 0; i < drops.size(); ++i) {
+            Drop &d = drops[i];
+            d.top += d.speed * CS;
+            if (d.top - d.len * CS > H) {
+                d.top   = -d.len * CS;
+                const int seed = ph(i * 1777 + d.len * 37 + i);
+                d.speed = 1 + seed % 2;
+                d.len   = 5 + ph(seed * 31) % 15;
+            }
+        }
+    }
+};
 
 // ---------------------------------------------------------------------------
 // AMD_GUI – main application window
@@ -72,12 +177,13 @@ public:
     QLabel       *recordsStatsLabel;
 
     // ── State ────────────────────────────────────────────────────────────────
-    // 0 = Light, 1 = Dark, 2 = Neon
+    // 0 = Light, 1 = Dark, 2 = Neo Matrix
     int                   themeMode;
     QSettings            *settings;
     QNetworkAccessManager *networkManager;
     QProcess             *backendProcess;
     bool                  backendStartedByGui;
+    MatrixSidebar        *matrixSidebar;
     QList<QJsonObject>    allPatients;   // local cache for search filtering
 
     // ────────────────────────────────────────────────────────────────────────
@@ -91,6 +197,7 @@ public:
         networkManager      = new QNetworkAccessManager(this);
         backendProcess      = new QProcess(this);
         backendStartedByGui = false;
+        matrixSidebar       = nullptr;
 
         setupUI();
 
@@ -122,9 +229,10 @@ private:
         root->setContentsMargins(0, 0, 0, 0);
 
         // ── LEFT SIDEBAR ──────────────────────────────────────────────────
-        QWidget *sidebar = new QWidget();
-        sidebar->setObjectName("sidebar");
-        sidebar->setFixedWidth(275);
+        matrixSidebar = new MatrixSidebar();
+        matrixSidebar->setObjectName("sidebar");
+        matrixSidebar->setFixedWidth(275);
+        QWidget *sidebar = matrixSidebar;
 
         QVBoxLayout *sideLayout = new QVBoxLayout(sidebar);
         sideLayout->setContentsMargins(16, 20, 16, 20);
@@ -189,7 +297,7 @@ private:
         sideLayout->addStretch();
 
         // Theme toggle
-        themeBtn = new QPushButton(themeMode == 1 ? "⚡   Neon Mode" : themeMode == 2 ? "☀   Light Mode" : "🌙   Dark Mode");
+        themeBtn = new QPushButton(themeMode == 1 ? "🟩   Neo Matrix" : themeMode == 2 ? "☀   Light Mode" : "🌙   Dark Mode");
         themeBtn->setObjectName("secondaryBtn");
         sideLayout->addWidget(themeBtn);
 
@@ -467,14 +575,19 @@ private:
         QNetworkRequest req(QUrl("http://127.0.0.1:5000/health"));
         QNetworkReply *reply = networkManager->get(req);
         connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            const bool isNeon = (themeMode == 2);
             if (reply->error() == QNetworkReply::NoError) {
                 const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
                 const QString model   = obj.value("model_name").toString("Unknown");
-                backendStatusLabel->setText("● Online — " + model);
-                backendStatusLabel->setStyleSheet("color: #27ae60; font-weight: bold;");
+                backendStatusLabel->setText(isNeon ? "◈ ONLINE — " + model : "● Online — " + model);
+                backendStatusLabel->setStyleSheet(
+                    isNeon ? "color: #00ff41; font-weight: bold; font-family: 'Courier New', monospace;"
+                           : "color: #27ae60; font-weight: bold;");
             } else {
-                backendStatusLabel->setText("● Offline");
-                backendStatusLabel->setStyleSheet("color: #e74c3c; font-weight: bold;");
+                backendStatusLabel->setText(isNeon ? "◉ OFFLINE" : "● Offline");
+                backendStatusLabel->setStyleSheet(
+                    isNeon ? "color: #ff0033; font-weight: bold; font-family: 'Courier New', monospace;"
+                           : "color: #e74c3c; font-weight: bold;");
             }
             reply->deleteLater();
         });
@@ -542,15 +655,22 @@ private:
             if (obj.contains("error")) {
                 const QString errorMsg = obj.value("error").toString();
                 const bool isInvalidFundus = obj.value("invalid_fundus").toBool(false);
+                const bool isNeo = (themeMode == 2);
                 if (isInvalidFundus) {
-                    predictionBadge->setText("Invalid Image");
-                    predictionBadge->setStyleSheet(
-                        "QLabel { background-color: #ff0055; color: white; "
-                        "border-radius: 8px; padding: 8px 20px; font-size: 14px; font-weight: bold; }");
-                    riskLabel->setText("⚠  Not a Fundus Image");
-                    riskLabel->setStyleSheet(
-                        "QLabel { background-color: #cc0044; color: white; "
-                        "border-radius: 8px; padding: 8px 16px; font-weight: bold; }");
+                    predictionBadge->setText(isNeo ? "[ INVALID IMAGE ]" : "Invalid Image");
+                    predictionBadge->setStyleSheet(isNeo
+                        ? "QLabel { background-color: #1a0000; color: #ff2244; "
+                          "border: 2px solid #ff2244; border-radius: 6px; padding: 8px 20px; "
+                          "font-size: 13px; font-weight: bold; font-family: 'Courier New', monospace; }"
+                        : "QLabel { background-color: #ff0055; color: white; "
+                          "border-radius: 8px; padding: 8px 20px; font-size: 14px; font-weight: bold; }");
+                    riskLabel->setText(isNeo ? "◉  NOT A FUNDUS IMAGE" : "⚠  Not a Fundus Image");
+                    riskLabel->setStyleSheet(isNeo
+                        ? "QLabel { background-color: #1a0000; color: #ff2244; "
+                          "border: 1px solid #ff2244; border-radius: 6px; padding: 8px 16px; "
+                          "font-weight: bold; font-family: 'Courier New', monospace; }"
+                        : "QLabel { background-color: #cc0044; color: white; "
+                          "border-radius: 8px; padding: 8px 16px; font-weight: bold; }");
                     statusBar()->showMessage("Invalid image: not a retinal fundus photograph.");
                     QMessageBox::warning(this, "Invalid Fundus Image",
                         "Invalid Fundus Image.\nPlease enter a valid eye fundus image.");
@@ -578,21 +698,23 @@ private:
         // ── Prediction badge ──────────────────────────────────────────────
         predictionBadge->setText(prediction);
         if (prediction == "AMD") {
-            const QString bg = isNeon ? "#ff0033" : "#e74c3c";
-            const QString fg = "white";
-            const QString bdr = isNeon ? "border: 2px solid #ff0033; " : "";
+            const QString bg  = isNeon ? "#1a0000" : "#e74c3c";
+            const QString fg  = isNeon ? "#ff2244" : "white";
+            const QString bdr = isNeon ? "border: 2px solid #ff2244; " : "";
+            const QString fnt = isNeon ? "font-family: 'Courier New', monospace; letter-spacing: 2px; " : "";
             predictionBadge->setStyleSheet(
-                QString("QLabel { background-color: %1; color: %2; %3"
-                        "border-radius: 8px; padding: 8px 20px; font-size: 16px; font-weight: bold; }")
-                    .arg(bg, fg, bdr));
+                QString("QLabel { background-color: %1; color: %2; %3%4"
+                        "border-radius: 6px; padding: 8px 20px; font-size: 15px; font-weight: bold; }")
+                    .arg(bg, fg, bdr, fnt));
         } else if (prediction == "Normal") {
-            const QString bg = isNeon ? "#001a00" : "#27ae60";
-            const QString fg = isNeon ? "#00ff88" : "white";
-            const QString bdr = isNeon ? "border: 2px solid #00ff88; " : "";
+            const QString bg  = isNeon ? "#001500" : "#27ae60";
+            const QString fg  = isNeon ? "#00ff41" : "white";
+            const QString bdr = isNeon ? "border: 2px solid #00ff41; " : "";
+            const QString fnt = isNeon ? "font-family: 'Courier New', monospace; letter-spacing: 2px; " : "";
             predictionBadge->setStyleSheet(
-                QString("QLabel { background-color: %1; color: %2; %3"
-                        "border-radius: 8px; padding: 8px 20px; font-size: 16px; font-weight: bold; }")
-                    .arg(bg, fg, bdr));
+                QString("QLabel { background-color: %1; color: %2; %3%4"
+                        "border-radius: 6px; padding: 8px 20px; font-size: 15px; font-weight: bold; }")
+                    .arg(bg, fg, bdr, fnt));
         } else {
             predictionBadge->setStyleSheet(
                 "QLabel { background-color: #7f8c8d; color: white; "
@@ -605,23 +727,23 @@ private:
             if (confidence >= 0.85) {
                 risk = "⚠  High Risk";
                 riskStyle = isNeon
-                    ? "QLabel { background-color:#1a0000; color:#ff0033; border:2px solid #ff0033; border-radius:8px; padding:8px 16px; font-weight:bold; }"
+                    ? "QLabel { background-color:#1a0000; color:#ff2244; border:2px solid #ff2244; border-radius:6px; padding:8px 16px; font-weight:bold; font-family:'Courier New',monospace; }"
                     : "QLabel { background-color:#c0392b; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             } else if (confidence >= 0.60) {
                 risk = "⚡  Moderate Risk";
                 riskStyle = isNeon
-                    ? "QLabel { background-color:#1a0a00; color:#ff6600; border:2px solid #ff6600; border-radius:8px; padding:8px 16px; font-weight:bold; }"
+                    ? "QLabel { background-color:#1a0800; color:#ff8800; border:2px solid #ff8800; border-radius:6px; padding:8px 16px; font-weight:bold; font-family:'Courier New',monospace; }"
                     : "QLabel { background-color:#e67e22; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             } else {
                 risk = "○  Low Risk";
                 riskStyle = isNeon
-                    ? "QLabel { background-color:#1a1000; color:#ffcc00; border:2px solid #ffcc00; border-radius:8px; padding:8px 16px; font-weight:bold; }"
+                    ? "QLabel { background-color:#0d0d00; color:#cccc00; border:2px solid #cccc00; border-radius:6px; padding:8px 16px; font-weight:bold; font-family:'Courier New',monospace; }"
                     : "QLabel { background-color:#f39c12; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
             }
         } else {
             risk = "✓  Healthy";
             riskStyle = isNeon
-                ? "QLabel { background-color:#001a00; color:#00ff88; border:2px solid #00ff88; border-radius:8px; padding:8px 16px; font-weight:bold; }"
+                ? "QLabel { background-color:#001500; color:#00ff41; border:2px solid #00ff41; border-radius:6px; padding:8px 16px; font-weight:bold; font-family:'Courier New',monospace; letter-spacing:1px; }"
                 : "QLabel { background-color:#27ae60; color:white; border-radius:8px; padding:8px 16px; font-weight:bold; }";
         }
         riskLabel->setText(risk);
@@ -631,9 +753,16 @@ private:
         const int confPct = static_cast<int>(confidence * 100.0);
         confidenceBar->setValue(confPct);
         confidenceValueLabel->setText(QString::number(confidence * 100.0, 'f', 1) + "%");
-        const QString barColor = confidence >= 0.70 ? "#27ae60"
-                               : confidence >= 0.50 ? "#f39c12"
-                               :                      "#e74c3c";
+        QString barColor;
+        if (isNeon) {
+            barColor = confidence >= 0.70 ? "#00ff41"
+                     : confidence >= 0.50 ? "#88cc00"
+                     :                      "#cc4400";
+        } else {
+            barColor = confidence >= 0.70 ? "#27ae60"
+                     : confidence >= 0.50 ? "#f39c12"
+                     :                      "#e74c3c";
+        }
         confidenceBar->setStyleSheet(
             QString("QProgressBar::chunk { background-color:%1; border-radius:4px; }").arg(barColor));
 
@@ -784,6 +913,7 @@ private:
 
     void applyLightMode() {
         themeBtn->setText("🌙   Dark Mode");
+        if (matrixSidebar) matrixSidebar->setNeonMode(false, QColor("#1e2d3d"));
         qApp->setStyleSheet(R"(
             /* ── Base ── */
             QMainWindow, QWidget {
@@ -977,7 +1107,8 @@ private:
     }
 
     void applyDarkMode() {
-        themeBtn->setText("⚡   Neon Mode");
+        themeBtn->setText("🟩   Neo Matrix");
+        if (matrixSidebar) matrixSidebar->setNeonMode(false, QColor("#12151c"));
         qApp->setStyleSheet(R"(
             /* ── Base ── */
             QMainWindow, QWidget {
@@ -1172,199 +1303,338 @@ private:
 
     void applyNeonMode() {
         themeBtn->setText("☀   Light Mode");
+        if (matrixSidebar) matrixSidebar->setNeonMode(true);
         qApp->setStyleSheet(R"(
+            /* ══════════════════════════════════════════════
+               NEO MATRIX THEME  –  pitch-black + #00ff41
+               ══════════════════════════════════════════════ */
+
             /* ── Base ── */
             QMainWindow, QWidget {
                 background-color: #000000;
-                color: #e0ffe0;
-                font-family: "Segoe UI", Arial, sans-serif;
+                color: #00ff41;
+                font-family: "Courier New", "Consolas", "Lucida Console", monospace;
                 font-size: 13px;
             }
-            /* ── Sidebar ── */
+            /* ── Sidebar (background drawn by MatrixSidebar paintEvent) ── */
             QWidget#sidebar {
-                background-color: #050505;
+                background-color: transparent;
             }
             QWidget#sidebar QLabel {
-                color: #00ff88;
+                color: #00ff41;
+                background: transparent;
             }
             QLabel#appTitle {
-                color: #00ff88;
-                font-size: 20px;
+                color: #00ff41;
+                font-size: 21px;
                 font-weight: bold;
+                font-family: "Courier New", monospace;
+                letter-spacing: 3px;
             }
             QLabel#appSubtitle {
-                color: #007744;
-                font-size: 11px;
-            }
-            QLabel#sectionHeader {
-                color: #00ff88;
+                color: #006622;
                 font-size: 10px;
-                font-weight: bold;
+                font-family: "Courier New", monospace;
                 letter-spacing: 2px;
             }
-            QLabel#statusLabel, QLabel#infoLabel {
-                color: #00cc66;
-                font-size: 12px;
+            QLabel#sectionHeader {
+                color: #00ff41;
+                font-size: 10px;
+                font-weight: bold;
+                font-family: "Courier New", monospace;
+                letter-spacing: 3px;
             }
+            QLabel#statusLabel, QLabel#infoLabel {
+                color: #00cc33;
+                font-size: 12px;
+                font-family: "Courier New", monospace;
+                background: transparent;
+            }
+            /* ── Patient group box ── */
             QGroupBox#patientGroup {
-                color: #00ff88;
-                border: 1px solid #00ff88;
-                border-radius: 6px;
+                color: #00ff41;
+                border: 1px solid #00aa22;
+                border-radius: 4px;
                 margin-top: 10px;
                 padding-top: 10px;
+                background-color: rgba(0, 20, 0, 160);
             }
             QGroupBox#patientGroup::title {
                 subcontrol-origin: margin;
                 left: 10px;
-                color: #00ff88;
-                font-size: 12px;
+                color: #00ff41;
+                font-size: 11px;
+                font-family: "Courier New", monospace;
             }
             QGroupBox#patientGroup QLabel {
-                color: #00cc66;
+                color: #00cc33;
+                background: transparent;
             }
+            /* ── Sidebar inputs ── */
             QLineEdit#sidebarInput, QSpinBox#sidebarInput {
-                background-color: #0a0a0a;
-                color: #00ff88;
-                border: 1px solid #00ff88;
-                border-radius: 4px;
+                background-color: #000d00;
+                color: #00ff41;
+                border: 1px solid #00aa22;
+                border-radius: 3px;
                 padding: 5px 8px;
+                selection-background-color: #004400;
+                selection-color: #00ff41;
+                font-family: "Courier New", monospace;
             }
+            QLineEdit#sidebarInput:focus, QSpinBox#sidebarInput:focus {
+                border: 1px solid #00ff41;
+                background-color: #001500;
+            }
+            QSpinBox#sidebarInput::up-button, QSpinBox#sidebarInput::down-button {
+                background-color: #001a00;
+                border: 1px solid #00aa22;
+            }
+            /* ── Primary button – glowing terminal style ── */
             QPushButton#primaryBtn {
-                background-color: #000000;
-                color: #00ff88;
-                border: 2px solid #00ff88;
-                border-radius: 6px;
+                background-color: #001200;
+                color: #00ff41;
+                border: 2px solid #00ff41;
+                border-radius: 4px;
                 padding: 8px 16px;
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: bold;
+                font-family: "Courier New", monospace;
+                letter-spacing: 1px;
             }
-            QPushButton#primaryBtn:hover   { background-color: #00ff88; color: #000000; }
-            QPushButton#primaryBtn:pressed { background-color: #00cc66; color: #000000; }
+            QPushButton#primaryBtn:hover {
+                background-color: #00ff41;
+                color: #000000;
+                border-color: #00ff41;
+            }
+            QPushButton#primaryBtn:pressed {
+                background-color: #00cc33;
+                color: #000000;
+            }
+            /* ── Secondary buttons ── */
             QPushButton#secondaryBtn {
-                background-color: #000000;
-                color: #00cc66;
-                border: 1px solid #00cc66;
-                border-radius: 5px;
+                background-color: #000d00;
+                color: #00cc33;
+                border: 1px solid #006622;
+                border-radius: 3px;
                 padding: 5px 12px;
+                font-family: "Courier New", monospace;
             }
-            QPushButton#secondaryBtn:hover { background-color: #0a200a; }
-            QFrame#separator  { color: #00ff88; }
-            QFrame#vSeparator { color: #00ff88; }
-            /* ── Tabs ── */
+            QPushButton#secondaryBtn:hover {
+                background-color: #001a00;
+                color: #00ff41;
+                border-color: #00aa22;
+            }
+            QPushButton#secondaryBtn:pressed {
+                background-color: #002200;
+            }
+            /* ── Separators ── */
+            QFrame#separator  { color: #004400; }
+            QFrame#vSeparator { color: #004400; }
+            /* ── Tab widget ── */
             QTabWidget#mainTabs::pane {
-                border: 1px solid #00ff88;
+                border: 1px solid #004400;
                 background-color: #000000;
             }
             QTabBar::tab {
-                background-color: #050505;
-                color: #007744;
-                border: 1px solid #003322;
+                background-color: #020f02;
+                color: #006622;
+                border: 1px solid #004400;
+                border-bottom: none;
                 padding: 9px 22px;
-                margin-right: 2px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
+                margin-right: 3px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-family: "Courier New", monospace;
+                letter-spacing: 1px;
             }
             QTabBar::tab:selected {
                 background-color: #000000;
-                color: #00ff88;
+                color: #00ff41;
                 font-weight: bold;
-                border-bottom: 2px solid #00ff88;
+                border-color: #00ff41;
+                border-bottom: 2px solid #000000;
             }
-            QTabBar::tab:hover:!selected { background-color: #0a150a; }
-            /* ── Image groups ── */
+            QTabBar::tab:hover:!selected {
+                background-color: #001a00;
+                color: #00cc33;
+            }
+            /* ── Image group boxes ── */
             QGroupBox#imageGroup {
-                background-color: #050505;
-                border: 1px solid #00ff88;
-                border-radius: 8px;
+                background-color: #010801;
+                border: 1px solid #00aa22;
+                border-radius: 6px;
                 margin-top: 10px;
             }
-            QGroupBox#imageGroup::title { color: #00ff88; }
+            QGroupBox#imageGroup::title {
+                color: #00ff41;
+                font-family: "Courier New", monospace;
+                letter-spacing: 1px;
+            }
             QLabel#imageDisplay {
-                background-color: #0a0a0a;
+                background-color: #000d00;
+                border: 1px solid #004400;
                 border-radius: 4px;
-                color: #007744;
+                color: #006622;
+                font-family: "Courier New", monospace;
             }
             /* ── Results group ── */
             QGroupBox#resultsGroup {
-                background-color: #050505;
-                border: 1px solid #00ff88;
-                border-radius: 8px;
+                background-color: #010801;
+                border: 1px solid #00aa22;
+                border-radius: 6px;
                 margin-top: 10px;
             }
-            QLabel#predictionBadge {
-                background-color: #003322;
-                color: #00ff88;
-                border: 2px solid #00ff88;
-                border-radius: 8px;
-                padding: 8px 20px;
-                font-size: 16px;
-                font-weight: bold;
+            QGroupBox#resultsGroup::title {
+                color: #00ff41;
+                font-family: "Courier New", monospace;
             }
+            /* ── Prediction badge (default – overridden after analysis) ── */
+            QLabel#predictionBadge {
+                background-color: #001a00;
+                color: #00ff41;
+                border: 2px solid #00aa22;
+                border-radius: 6px;
+                padding: 8px 20px;
+                font-size: 15px;
+                font-weight: bold;
+                font-family: "Courier New", monospace;
+                letter-spacing: 2px;
+            }
+            /* ── Risk label (default – overridden after analysis) ── */
             QLabel#riskLabel {
-                background-color: #003322;
-                color: #00ff88;
-                border: 1px solid #00ff88;
-                border-radius: 8px;
+                background-color: #001a00;
+                color: #00cc33;
+                border: 1px solid #006622;
+                border-radius: 6px;
                 padding: 8px 16px;
                 font-weight: bold;
+                font-family: "Courier New", monospace;
             }
-            QLabel#metricHeader { color: #007744; }
-            QLabel#metricValue  { color: #00ff88; font-weight: bold; }
+            /* ── Metric labels ── */
+            QLabel#metricHeader {
+                color: #006622;
+                font-family: "Courier New", monospace;
+            }
+            QLabel#metricValue {
+                color: #00ff41;
+                font-weight: bold;
+                font-family: "Courier New", monospace;
+            }
+            /* ── Confidence bar ── */
             QProgressBar#confidenceBar {
-                background-color: #0a0a0a;
-                border: 1px solid #00ff88;
-                border-radius: 4px;
+                background-color: #000d00;
+                border: 1px solid #00aa22;
+                border-radius: 3px;
+                text-align: center;
             }
             QProgressBar#confidenceBar::chunk {
-                background-color: #00ff88;
-                border-radius: 4px;
+                background-color: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #004400, stop:0.5 #00cc33, stop:1 #00ff41
+                );
+                border-radius: 3px;
             }
             /* ── Records tab ── */
             QLineEdit#searchBar {
-                background-color: #0a0a0a;
-                color: #00ff88;
-                border: 1px solid #00ff88;
-                border-radius: 4px;
+                background-color: #000d00;
+                color: #00ff41;
+                border: 1px solid #00aa22;
+                border-radius: 3px;
                 padding: 5px 8px;
+                font-family: "Courier New", monospace;
+                selection-background-color: #004400;
+            }
+            QLineEdit#searchBar:focus {
+                border-color: #00ff41;
+                background-color: #001500;
             }
             QLabel#statsLabel {
-                color: #007744;
+                color: #006622;
                 font-size: 12px;
+                font-family: "Courier New", monospace;
                 padding: 2px 0;
             }
             QTableWidget#patientTable {
-                background-color: #050505;
-                alternate-background-color: #0a0a0a;
-                gridline-color: transparent;
-                border: 1px solid #00ff88;
-                border-radius: 6px;
-                selection-background-color: #003322;
-                selection-color: #00ff88;
-                color: #e0ffe0;
+                background-color: #010801;
+                alternate-background-color: #000d00;
+                gridline-color: #002200;
+                border: 1px solid #004400;
+                border-radius: 4px;
+                selection-background-color: #002a00;
+                selection-color: #00ff41;
+                color: #00cc33;
+                font-family: "Courier New", monospace;
+            }
+            QTableWidget#patientTable::item:hover {
+                background-color: #001a00;
             }
             QHeaderView::section {
-                background-color: #0a0a0a;
-                color: #00ff88;
+                background-color: #000d00;
+                color: #00ff41;
                 border: none;
-                border-bottom: 2px solid #00ff88;
+                border-bottom: 2px solid #00ff41;
+                border-right: 1px solid #002200;
                 padding: 7px 10px;
                 font-weight: bold;
+                font-family: "Courier New", monospace;
+                letter-spacing: 1px;
             }
+            QScrollBar:vertical {
+                background: #000800;
+                width: 8px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #004400;
+                border-radius: 4px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover  { background: #00aa22; }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical      { height: 0; }
+            QScrollBar:horizontal {
+                background: #000800;
+                height: 8px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #004400;
+                border-radius: 4px;
+                min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #00aa22; }
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal     { width: 0; }
             /* ── Status bar ── */
             QStatusBar {
-                background-color: #000000;
-                color: #00ff88;
+                background-color: #000800;
+                color: #00ff41;
                 font-size: 12px;
+                font-family: "Courier New", monospace;
                 padding-left: 6px;
-                border-top: 1px solid #00ff88;
+                border-top: 1px solid #004400;
             }
+            QStatusBar::item { border: none; }
             /* ── About tab ── */
             QLabel#aboutTitle {
                 font-size: 22px;
                 font-weight: bold;
-                color: #00ff88;
+                color: #00ff41;
+                font-family: "Courier New", monospace;
+                letter-spacing: 3px;
             }
-            QLabel#aboutText { color: #e0ffe0; line-height: 1.5; }
+            QLabel#aboutText {
+                color: #00cc33;
+                line-height: 1.6;
+                font-family: "Courier New", monospace;
+            }
+            /* ── Tooltips ── */
+            QToolTip {
+                background-color: #001200;
+                color: #00ff41;
+                border: 1px solid #00ff41;
+                font-family: "Courier New", monospace;
+                padding: 3px 6px;
+            }
         )");
     }
 

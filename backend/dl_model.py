@@ -376,18 +376,46 @@ def _backup_predict_prob_amd(input_tensor: np.ndarray) -> float:
     return float(np.clip(score, 0.05, 0.95))
 
 
+def _tta_augment(input_tensor: np.ndarray) -> list[np.ndarray]:
+    """Return a list of augmented tensors for test-time averaging.
+
+    Augmentations are chosen to match the geometric transforms used during
+    training (HorizontalFlip, VerticalFlip, Rotate) so the averaged prediction
+    is less sensitive to viewing angle or image orientation variations.
+
+    All returned arrays are C-contiguous copies safe to pass to PyTorch.
+    """
+    # input_tensor shape: (1, C, H, W), dtype float32
+    hflip = np.flip(input_tensor, axis=3).copy()   # mirror left–right
+    vflip = np.flip(input_tensor, axis=2).copy()   # mirror top–bottom
+    rot90 = np.rot90(input_tensor, k=1, axes=(2, 3)).copy()   # 90° CCW
+    rot270 = np.rot90(input_tensor, k=3, axes=(2, 3)).copy()  # 90° CW
+    return [input_tensor, hflip, vflip, rot90, rot270]
+
+
 def predict_probabilities(input_tensor: np.ndarray) -> np.ndarray:
+    """Return [prob_normal, prob_amd] averaged over TTA augmentations.
+
+    Test-Time Augmentation (TTA) runs 5 geometric variants of the input
+    through all loaded model checkpoints and averages the raw sigmoid scores.
+    This substantially reduces prediction variance on out-of-distribution or
+    unusually oriented fundus images without any retraining.
+    """
     _ensure_model_ready()
     if not is_real_model_loaded():
         prob_amd = _backup_predict_prob_amd(input_tensor)
         return np.array([1.0 - prob_amd, prob_amd], dtype=np.float32)
 
-    with torch.no_grad():
-        tensor = _as_input_tensor(input_tensor)
-        probs = [float(model(tensor).item()) for model in MODELS]
-        prob_amd = float(np.mean(probs))
+    tta_tensors = _tta_augment(input_tensor)
+    all_probs: list[float] = []
 
-    prob_amd = float(np.clip(prob_amd, 0.0, 1.0))
+    with torch.no_grad():
+        for aug in tta_tensors:
+            tensor = _as_input_tensor(aug)
+            aug_probs = [float(model(tensor).item()) for model in MODELS]
+            all_probs.append(float(np.mean(aug_probs)))
+
+    prob_amd = float(np.clip(float(np.mean(all_probs)), 0.0, 1.0))
     return np.array([1.0 - prob_amd, prob_amd], dtype=np.float32)
 
 
