@@ -87,7 +87,8 @@ Successful response includes:
 - eye_condition: same as prediction
 - confidence: top class probability
 - class_probabilities: map of class -> probability
-- accuracy, precision, recall, sensitivity, specificity, f1_score: per-image analysis scores derived from the current prediction confidence and probability margin
+- accuracy, sensitivity, specificity, precision, f1_score: reported project classification metrics
+- metrics_source: describes where the displayed classification metrics come from
 - model_metrics: checkpoint / validation-set metrics for the loaded model
 - model_name, model_paths, models_loaded, backup_active
 

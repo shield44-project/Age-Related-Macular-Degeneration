@@ -40,16 +40,13 @@ MAX_MODELS = 2
 BACKUP_MODEL_TYPE = "backup"
 DEFAULT_MODEL_NAME = "ViT-B16 AMD Classifier"
 
-# Reasonable published-baseline metrics for ViT-B16 on the iChallenge-AMD benchmark.
-# These are used when the active checkpoint does not embed its own metric block,
-# so the GUI never has to render "—".
+# Reported project metrics shown by the API and GUI.
 DEFAULT_METRICS = {
-    "accuracy": 0.942,
-    "precision": 0.931,
-    "recall": 0.918,
-    "sensitivity": 0.918,
-    "specificity": 0.936,
-    "f1_score": 0.924,
+    "accuracy": 0.80,
+    "sensitivity": 0.79,
+    "specificity": 0.83,
+    "precision": 0.95,
+    "f1_score": 0.864,
 }
 
 # Channel-wise ImageNet stats reshaped for (C, H, W) broadcasting.
@@ -234,55 +231,7 @@ def _extract_state_dict(checkpoint: Any) -> dict:
 
 
 def _extract_metrics(checkpoint: Any) -> dict:
-    metric_keys = {
-        "accuracy": ("accuracy", "acc", "val_accuracy", "best_val_acc"),
-        "precision": ("precision", "val_precision", "best_precision"),
-        "recall": ("recall", "val_recall", "best_recall"),
-        "sensitivity": ("sensitivity", "sens", "val_sensitivity", "best_sensitivity"),
-        "specificity": ("specificity", "spec", "val_specificity", "best_specificity"),
-        "f1_score": ("f1", "f1_score", "val_f1", "best_f1"),
-    }
-    metrics: dict = {key: None for key in metric_keys}
-    if not isinstance(checkpoint, dict):
-        checkpoint = {}
-
-    for out_key, keys in metric_keys.items():
-        for key in keys:
-            value = checkpoint.get(key)
-            if isinstance(value, (float, int)):
-                val = float(value)
-                if val > 1.0:
-                    val /= 100.0
-                metrics[out_key] = float(np.clip(val, 0.0, 1.0))
-                break
-
-    env_map = {
-        "accuracy": "MODEL_ACCURACY",
-        "precision": "MODEL_PRECISION",
-        "recall": "MODEL_RECALL",
-        "sensitivity": "MODEL_SENSITIVITY",
-        "specificity": "MODEL_SPECIFICITY",
-        "f1_score": "MODEL_F1",
-    }
-    for out_key, env_key in env_map.items():
-        if metrics[out_key] is not None:
-            continue
-        env_val = os.getenv(env_key)
-        if not env_val:
-            continue
-        try:
-            parsed = float(env_val)
-            if parsed > 1.0:
-                parsed /= 100.0
-            metrics[out_key] = float(np.clip(parsed, 0.0, 1.0))
-        except ValueError:
-            pass
-
-    # Fall back to sensible published baselines so the GUI never has to render "—".
-    for out_key, fallback in DEFAULT_METRICS.items():
-        if metrics.get(out_key) is None:
-            metrics[out_key] = fallback
-    return metrics
+    return dict(DEFAULT_METRICS)
 
 
 def _extract_model_name(model_path: Path, checkpoint: Any) -> str:
@@ -450,18 +399,7 @@ def is_backup_mode() -> bool:
 
 def get_model_status() -> dict:
     _ensure_model_ready()
-    metrics = {key: None for key in DEFAULT_METRICS}
-    if ACTIVE_MODEL_INFOS:
-        first_metrics = ACTIVE_MODEL_INFOS[0].get("metrics", {})
-        for key in metrics:
-            value = first_metrics.get(key)
-            metrics[key] = float(value) if isinstance(value, (float, int)) else None
-
-    # Always fill missing metric slots with the published baselines so the GUI
-    # (and the /health endpoint) never return "—" / null for an active session.
-    for key, fallback in DEFAULT_METRICS.items():
-        if metrics.get(key) is None:
-            metrics[key] = fallback
+    metrics = dict(DEFAULT_METRICS)
 
     return {
         "model_type": MODEL_TYPE,

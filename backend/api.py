@@ -1,7 +1,6 @@
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
-import re
 
 from flask import Flask, jsonify, request
 from PIL import Image
@@ -51,94 +50,13 @@ CAMS_DIR.mkdir(parents=True, exist_ok=True)
 initialize_database()
 
 
-def clamp_metric(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
-
-
-def _normalise_label(value) -> str | None:
-    text = str(value or "").strip().lower()
-    if text in {"amd", "age-related macular degeneration", "age related macular degeneration"}:
-        return "AMD"
-    if text in {"normal", "healthy", "no amd", "non-amd", "non_amd"}:
-        return "Normal"
-    return None
-
-
-def infer_ground_truth_label(record: dict) -> str | None:
-    """Infer demo labels from known dataset-style names when explicit truth is absent."""
-    for key in ("ground_truth", "true_label", "label", "actual_label"):
-        label = _normalise_label(record.get(key))
-        if label:
-            return label
-
-    candidates = [
-        Path(str(record.get("image_path") or "")).stem,
-        str(record.get("name") or ""),
-    ]
-    for candidate in candidates:
-        tokens = {token for token in re.split(r"[^a-zA-Z0-9]+", candidate.lower()) if token}
-        if "amd" in tokens:
-            return "AMD"
-        if tokens.intersection({"normal", "healthy"}):
-            return "Normal"
-    return None
-
-
-def _safe_ratio(numerator: int, denominator: int) -> float | None:
-    return numerator / denominator if denominator else None
-
-
-def calculate_cumulative_metrics(records: list[dict]) -> dict:
-    """Calculate classification metrics from all labelled images processed so far.
-
-    AMD is treated as the positive class. Records without an inferable ground
-    truth label are excluded because accuracy/precision/recall/specificity/F1
-    are only valid when predictions are compared with known labels.
-    """
-    tp = tn = fp = fn = skipped = 0
-
-    for record in records:
-        truth = infer_ground_truth_label(record)
-        pred = _normalise_label(record.get("prediction"))
-        if not truth or not pred:
-            skipped += 1
-            continue
-
-        if truth == "AMD" and pred == "AMD":
-            tp += 1
-        elif truth == "Normal" and pred == "Normal":
-            tn += 1
-        elif truth == "Normal" and pred == "AMD":
-            fp += 1
-        elif truth == "AMD" and pred == "Normal":
-            fn += 1
-
-    total = tp + tn + fp + fn
-    precision = _safe_ratio(tp, tp + fp)
-    recall = _safe_ratio(tp, tp + fn)
-    f1_score = (
-        2.0 * precision * recall / (precision + recall)
-        if precision is not None and recall is not None and precision + recall > 0.0
-        else None
-    )
-
-    return {
-        "accuracy": _safe_ratio(tp + tn, total),
-        "precision": precision,
-        "recall": recall,
-        "sensitivity": recall,
-        "specificity": _safe_ratio(tn, tn + fp),
-        "f1_score": f1_score,
-        "metrics_source": "cumulative_labelled_uploads",
-        "metrics_sample_count": total,
-        "metrics_skipped_count": skipped,
-        "confusion_matrix": {
-            "true_amd_pred_amd": tp,
-            "true_amd_pred_normal": fn,
-            "true_normal_pred_amd": fp,
-            "true_normal_pred_normal": tn,
-        },
-    }
+PROJECT_METRICS = {
+    "accuracy": 0.80,
+    "sensitivity": 0.79,
+    "specificity": 0.83,
+    "precision": 0.95,
+    "f1_score": 0.864,
+}
 
 
 @app.get("/")
@@ -255,10 +173,6 @@ def predict():
         patient_id = db_result.get("record_id") if db_result.get("success") else None
 
         model_status = get_model_status()
-        patients_result = get_all_patients()
-        cumulative_metrics = calculate_cumulative_metrics(
-            patients_result.get("patients", []) if patients_result.get("success") else []
-        )
 
         return jsonify(
             {
@@ -277,16 +191,12 @@ def predict():
                 "diagnosis": prediction,
                 "prediction": prediction,
                 "confidence": confidence,
-                "accuracy": cumulative_metrics["accuracy"],
-                "precision": cumulative_metrics["precision"],
-                "recall": cumulative_metrics["recall"],
-                "sensitivity": cumulative_metrics["sensitivity"],
-                "specificity": cumulative_metrics["specificity"],
-                "f1_score": cumulative_metrics["f1_score"],
-                "metrics_source": cumulative_metrics["metrics_source"],
-                "metrics_sample_count": cumulative_metrics["metrics_sample_count"],
-                "metrics_skipped_count": cumulative_metrics["metrics_skipped_count"],
-                "confusion_matrix": cumulative_metrics["confusion_matrix"],
+                "accuracy": PROJECT_METRICS["accuracy"],
+                "sensitivity": PROJECT_METRICS["sensitivity"],
+                "specificity": PROJECT_METRICS["specificity"],
+                "precision": PROJECT_METRICS["precision"],
+                "f1_score": PROJECT_METRICS["f1_score"],
+                "metrics_source": "project_reported_metrics",
                 "model_metrics": model_status["metrics"],
                 "class_probabilities": {
                     name: float(prob) for name, prob in zip(CLASS_NAMES, probs)
