@@ -112,3 +112,33 @@ if(WIN32 AND AMD_GUI_DEPLOY_QT)
         )
     endif()
 endif()
+
+# ── Windows installer via CPack / NSIS ──────────────────────────────────────
+# Alternative to the Inno Setup path in installer/AMD_GUI.iss.
+# Requires NSIS (https://nsis.sourceforge.io) to be installed.
+# Usage:  cmake --build <build-dir> --target package  (or run cpack inside it)
+if(WIN32)
+    set(CPACK_GENERATOR "NSIS")
+    set(CPACK_PACKAGE_NAME "AMD_GUI")
+    set(CPACK_PACKAGE_VENDOR "shield44-project")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "Age-Related Macular Degeneration Detection System")
+    set(CPACK_PACKAGE_VERSION "1.0.0")
+    set(CPACK_PACKAGE_VERSION_MAJOR "1")
+    set(CPACK_PACKAGE_VERSION_MINOR "0")
+    set(CPACK_PACKAGE_VERSION_PATCH "0")
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY "AMD Detection System")
+    set(CPACK_NSIS_DISPLAY_NAME "AMD Detection System")
+    set(CPACK_NSIS_PACKAGE_NAME "AMD Detection System")
+    set(CPACK_NSIS_EXECUTABLES_DIRECTORY "bin")
+    set(CPACK_NSIS_MUI_FINISHPAGE_RUN "AMD_GUI.exe")
+    set(CPACK_NSIS_CREATE_ICONS_EXTRA
+        "CreateShortCut '$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\AMD Detection System.lnk' \
+'$INSTDIR\\\\bin\\\\AMD_GUI.exe'"
+    )
+    set(CPACK_NSIS_DELETE_ICONS_EXTRA
+        "Delete '$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\AMD Detection System.lnk'"
+    )
+    set(CPACK_PACKAGE_EXECUTABLES "AMD_GUI" "AMD Detection System")
+    include(CPack)
+endif()

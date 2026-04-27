@@ -1,0 +1,126 @@
+name: Build Windows Installer (.exe)
+
+# Trigger manually from GitHub (works from any OS including Ubuntu) or
+# automatically on every push to main/master and on version tags.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    name: Build AMD_GUI Windows installer
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      # ── 1. Source ─────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Qt ─────────────────────────────────────────────────────────────
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.*'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      # ── 3. C++ GUI build ─────────────────────────────────────────────────
+      - name: Configure CMake
+        run: cmake -S . -B build/installer -G "Visual Studio 17 2022" -A x64
+
+      - name: Build GUI (Release)
+        run: cmake --build build/installer --config Release
+
+      # ── 4. Python / PyInstaller ──────────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Freeze the Flask backend into a single backend_server.exe.
+      # The --onefile flag produces one self-contained executable.
+      # PyInstaller extracts it to a temp folder on first run, which is
+      # acceptable because the GUI already polls the health endpoint while
+      # the backend is starting up.
+      - name: Freeze backend with PyInstaller
+        run: |
+          pyinstaller --onefile --name backend_server `
+            --hidden-import flask_cors `
+            --collect-all timm `
+            --add-data "backend;backend" `
+            scripts/backend_entry.py
+
+      # ── 5. Stage distribution tree ────────────────────────────────────────
+      # After cmake --build the AMD_GUI.exe and all Qt DLLs (deployed by
+      # windeployqt via the CMake POST_BUILD command) live in:
+      #   build/installer/bin/Release/
+      # PyInstaller output lives in:
+      #   dist/backend_server.exe
+      - name: Stage distribution files
+        shell: pwsh
+        run: |
+          $staging = "dist\staging"
+          New-Item -ItemType Directory -Force -Path "$staging\bin" | Out-Null
+
+          # GUI + Qt runtime DLLs (windeployqt ran post-build)
+          Copy-Item -Recurse "build\installer\bin\Release\*" "$staging\bin\" -Force
+
+          # Frozen backend
+          if (Test-Path "dist\backend_server.exe") {
+            Copy-Item "dist\backend_server.exe" "$staging\bin\" -Force
+            Write-Host "Frozen backend_server.exe staged."
+          } else {
+            Write-Warning "backend_server.exe not found — installer will require Python."
+          }
+
+          # Python backend source (needed when backend_server.exe is absent)
+          Copy-Item -Recurse "backend" "$staging\backend" -Force
+
+          # Python requirements
+          Copy-Item "requirements.txt" "$staging\" -Force
+
+          Write-Host "Staging complete:"
+          Get-ChildItem -Recurse $staging | Select-Object FullName
+
+      # ── 6. Build installer with Inno Setup ────────────────────────────────
+      # Inno Setup 6 is pre-installed on windows-latest GitHub-hosted runners.
+      - name: Build Windows installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc   = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $stage  = "${{ github.workspace }}\dist\staging"
+          $outDir = "${{ github.workspace }}\dist"
+          # Derive a version string from the git tag (e.g. v1.2.3 → 1.2.3)
+          # or fall back to 1.0.0 for branch builds.
+          $rawTag = "${{ github.ref_name }}"
+          $version = if ($rawTag -match '^v?(\d+\.\d+\.\d+)') { $matches[1] } else { "1.0.0" }
+          & $iscc `
+            /DStagingDir="$stage" `
+            /DOutputDir="$outDir" `
+            /DAppVersion="$version" `
+            "installer\AMD_GUI.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # ── 7. Upload artifact ────────────────────────────────────────────────
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AMD_GUI-Windows-Installer
+          path: dist/AMD_GUI-*-Windows-Installer.exe
+          if-no-files-found: error
+          retention-days: 30

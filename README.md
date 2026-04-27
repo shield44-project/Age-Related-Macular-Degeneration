@@ -147,6 +147,58 @@ Run the GUI:
 
 The GUI checks backend health automatically and can start the backend process when needed.
 
+### Packaging (ZIP)
+
+Use the helper script to build, install, and zip the GUI + backend into `dist/`:
+
+Windows example:
+```powershell
+py -3 scripts/package.py --generator "Visual Studio 17 2022" --arch x64 --qt-prefix "C:\Qt\6.7.3\msvc2022_64"
+```
+
+Linux example:
+```bash
+python3 scripts/package.py
+```
+
+Optional flags:
+- `--config Release|Debug`
+- `--clean` to wipe previous build/install output
+- `--zip-name AMD_GUI-Windows.zip` to override the archive name
+
+### Building a Windows installer (.exe) from Ubuntu
+
+The recommended way to produce a Windows `.exe` installer from Ubuntu (or any OS) is the provided **GitHub Actions workflow**. It runs on a real `windows-latest` runner, so no Windows machine or cross-compiler is needed.
+
+**Steps:**
+
+1. Push your branch (or tag it with `v1.0.0`) — the workflow triggers automatically.  
+   Or go to **GitHub → Actions → Build Windows Installer (.exe) → Run workflow**.
+2. Wait for the job to finish (~10–15 min).
+3. Download `AMD_GUI-Windows-Installer` from the **Artifacts** section of the run.
+
+The workflow (``.github/workflows/build-installer.yml``) performs these steps on the Windows runner:
+
+| Step | Tool |
+|------|------|
+| Build the Qt C++ GUI | CMake + Visual Studio 2022 + Qt 6 |
+| Deploy Qt runtime DLLs | `windeployqt` (runs automatically via CMake) |
+| Freeze the Flask backend | PyInstaller `--onefile` → `backend_server.exe` |
+| Bundle into a Windows installer | Inno Setup 6 (`installer/AMD_GUI.iss`) |
+
+The resulting `AMD_GUI-<version>-Windows-Installer.exe`:
+- Installs `AMD_GUI.exe` + Qt DLLs + `backend_server.exe` under `Program Files\AMD Detection System`
+- Creates a Start Menu shortcut (optional desktop icon)
+- Launches the app on finish
+- Includes an uninstaller
+
+**Building the installer locally on a real Windows machine** (optional):
+
+```powershell
+# Requires: Visual Studio 2022, Qt 6, Python 3.12+, PyInstaller, Inno Setup 6
+py -3 scripts/package.py --installer --generator "Visual Studio 17 2022" --arch x64 --qt-prefix "C:\Qt\6.7.3\msvc2022_64"
+```
+
 ### CMake Notes
 
 - The project supports both Qt5 and Qt6.
