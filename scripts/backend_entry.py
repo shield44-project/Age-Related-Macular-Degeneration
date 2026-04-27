@@ -17,11 +17,14 @@ sys.path makes `import backend` work exactly as in normal Python.
 """
 
 import sys
+import os
 
 if getattr(sys, "frozen", False):
     # Running as a PyInstaller bundle — add the extraction dir to sys.path
     # so that 'from backend.server import main' resolves correctly.
-    sys.path.insert(0, sys._MEIPASS)  # type: ignore[attr-defined]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass and os.path.isdir(meipass):
+        sys.path.insert(0, meipass)  # type: ignore[arg-type]
 
 from backend.server import main  # noqa: E402
 

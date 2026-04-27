@@ -19,6 +19,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Path separator used in PyInstaller --add-data (';' on Windows, ':' on Unix).
+_DATA_SEP = ";" if platform.system() == "Windows" else ":"
+
 
 def run(cmd: list[str], cwd: Path | None = None) -> None:
     print("+", " ".join(cmd), flush=True)
@@ -57,7 +60,7 @@ def _freeze_backend(root: Path, dist_dir: Path) -> Path:
         "--name", "backend_server",
         "--hidden-import", "flask_cors",
         "--collect-all", "timm",
-        "--add-data", f"backend{';' if platform.system() == 'Windows' else ':'}backend",
+        "--add-data", f"backend{_DATA_SEP}backend",
         str(entry),
     ]
     run(cmd, cwd=root)
@@ -77,9 +80,12 @@ def _run_inno_setup(root: Path, staging: Path, output: Path, version: str) -> No
     iscc_candidates = [
         r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         r"C:\Program Files\Inno Setup 6\ISCC.exe",
-        "iscc",
     ]
-    iscc = next((p for p in iscc_candidates if Path(p).exists() or p == "iscc"), None)
+    iscc: str | None = next(
+        (p for p in iscc_candidates if Path(p).exists()), None
+    )
+    if iscc is None:
+        iscc = shutil.which("iscc")
     if iscc is None:
         raise RuntimeError(
             "Inno Setup compiler (ISCC.exe) not found. "
