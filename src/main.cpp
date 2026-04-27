@@ -1547,6 +1547,17 @@ private:
     }
 
     QString detectPythonExecutable(const QString &projectRoot, QStringList &arguments) const {
+#ifdef Q_OS_WIN
+        // In installer / packaged builds the backend is shipped as a frozen
+        // executable (backend_server.exe) placed beside AMD_GUI.exe.
+        // Prefer it over a Python venv so the installer works without Python.
+        const QString frozenBackend =
+            QCoreApplication::applicationDirPath() + "/backend_server.exe";
+        if (QFile::exists(frozenBackend)) {
+            arguments.clear();
+            return frozenBackend;
+        }
+#endif
         arguments = QStringList({"-m", "backend"});
 
 #ifdef Q_OS_WIN
