@@ -147,6 +147,25 @@ Run the GUI:
 
 The GUI checks backend health automatically and can start the backend process when needed.
 
+### Packaging (ZIP)
+
+Use the helper script to build, install, and zip the GUI + backend into `dist/`:
+
+Windows example:
+```powershell
+py -3 scripts/package.py --generator "Visual Studio 17 2022" --arch x64 --qt-prefix "C:\Qt\6.7.3\msvc2022_64"
+```
+
+Linux example:
+```bash
+python3 scripts/package.py
+```
+
+Optional flags:
+- `--config Release|Debug`
+- `--clean` to wipe previous build/install output
+- `--zip-name AMD_GUI-Windows.zip` to override the archive name
+
 ### CMake Notes
 
 - The project supports both Qt5 and Qt6.
