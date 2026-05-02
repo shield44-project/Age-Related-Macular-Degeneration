@@ -519,85 +519,104 @@ def _resize_rgb(arr: np.ndarray, size) -> np.ndarray:
     return _pil_resize_rgb(arr, size)
 
 
+def _get_vit_backbone(model):
+    """Return the underlying timm ViT backbone, unwrapping any custom head wrapper.
+
+    Handles two common patterns:
+      1. The model *is* the timm ViT (has patch_embed / blocks / cls_token directly).
+      2. The model wraps the ViT under a common attribute name (e.g. ``backbone``).
+    """
+    vit_attrs = ("patch_embed", "blocks", "cls_token")
+    if all(hasattr(model, a) for a in vit_attrs):
+        return model
+    for attr in ("backbone", "model", "encoder", "vit", "transformer"):
+        inner = getattr(model, attr, None)
+        if inner is not None and all(hasattr(inner, a) for a in vit_attrs):
+            return inner
+    raise RuntimeError(
+        "Cannot locate a ViT backbone inside the model. "
+        "Checked model itself and common wrapper attributes."
+    )
+
+
 def _attention_rollout_for_vit(model, tensor, discard_ratio: float = 0.9):
     """Compute attention rollout for a timm ViT-like model.
-    Returns a numpy heatmap resized to patch-grid shape (H_patch, W_patch).
+    Returns a numpy heatmap resized to IMAGE_SIZE.
     """
     if not _HAS_TORCH:
         raise RuntimeError("PyTorch required for attention rollout")
 
-    backbone = model
-    # Try to locate common ViT components
-    if not all(hasattr(backbone, a) for a in ("patch_embed", "blocks", "cls_token", "pos_embed")):
+    # Unwrap to the actual ViT backbone (handles ViTBinaryClassifier wrapper etc.)
+    backbone = _get_vit_backbone(model)
+
+    if not all(hasattr(backbone, a) for a in ("patch_embed", "blocks", "cls_token")):
         raise RuntimeError("Model does not appear to be a timm ViT-compatible model")
 
-    # Build token sequence as timm does in forward_features
     with torch.no_grad():
-        # Patch embedding conv -> (B, C, Hp, Wp)
-        x = backbone.patch_embed.proj(tensor)
-        B, C, Hp, Wp = x.shape
-        x = x.flatten(2).transpose(1, 2)  # (B, N, C)
+        # patch_embed returns (B, N, C) directly
+        x = backbone.patch_embed(tensor)
+        B = x.shape[0]
         cls_tokens = backbone.cls_token.expand(B, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
+        x = torch.cat((cls_tokens, x), dim=1)  # (B, N+1, C)
+
         if hasattr(backbone, "pos_embed") and backbone.pos_embed is not None:
-            x = x + backbone.pos_embed
+            pe = backbone.pos_embed
+            if pe.shape[1] == x.shape[1]:
+                x = x + pe
+            elif pe.shape[1] == x.shape[1] - 1:
+                # no_embed_class variant: positional embeddings cover patches only
+                x = torch.cat([x[:, :1], x[:, 1:] + pe], dim=1)
+            # else: skip — best-effort, model may use dynamic resizing
 
-    attentions = []
-    for blk in backbone.blocks:
-        attn_mod = getattr(blk, "attn", None)
-        if attn_mod is None:
-            raise RuntimeError("Unexpected block structure: no attn module")
+        attentions = []
+        for blk in backbone.blocks:
+            attn_mod = getattr(blk, "attn", None)
+            if attn_mod is None:
+                raise RuntimeError("Unexpected block structure: no attn module")
 
-        # Attempt to compute attention from qkv weights if available
-        if hasattr(attn_mod, "qkv"):
-            qkv_weight = attn_mod.qkv.weight
-            qkv_bias = attn_mod.qkv.bias if hasattr(attn_mod.qkv, "bias") else None
-            # Produce qkv from tokens
-            qkv = torch.nn.functional.linear(x, qkv_weight, qkv_bias)
-            Bn, N, threeC = qkv.shape
-            head_dim = threeC // (3 * attn_mod.num_heads) if hasattr(attn_mod, "num_heads") else threeC // 3 // 12
-            # reshape -> (B, N, 3, num_heads, head_dim)
-            qkv = qkv.reshape(Bn, N, 3, -1, head_dim).permute(2, 0, 3, 1, 4)
-            q, k, v = qkv[0], qkv[1], qkv[2]
-            # q,k: (B, num_heads, N, head_dim)
-            attn = (q @ k.transpose(-2, -1)) / (head_dim ** 0.5)
-            attn = torch.softmax(attn, dim=-1)
-            # attn: (B, num_heads, N, N)
-            attn = attn.mean(dim=1)  # average heads -> (B, N, N)
-            attentions.append(attn[0].cpu().numpy())
-            # Run the block forward to update x for next layer
+            if hasattr(attn_mod, "qkv"):
+                # Apply pre-attention layer norm (present in all standard ViT blocks)
+                normed_x = blk.norm1(x) if hasattr(blk, "norm1") else x
+                qkv_weight = attn_mod.qkv.weight
+                qkv_bias = getattr(attn_mod.qkv, "bias", None)
+                qkv = torch.nn.functional.linear(normed_x, qkv_weight, qkv_bias)
+                Bn, N, threeC = qkv.shape
+                num_heads = getattr(attn_mod, "num_heads", 12)
+                head_dim = threeC // (3 * num_heads)
+                # (B, N, 3*C) -> (3, B, heads, N, head_dim)
+                qkv = qkv.reshape(Bn, N, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
+                q, k = qkv[0], qkv[1]
+                attn = (q @ k.transpose(-2, -1)) / (head_dim ** 0.5)
+                attn = torch.softmax(attn, dim=-1)
+                attn = attn.mean(dim=1)  # average over heads -> (B, N, N)
+                attentions.append(attn[0].cpu().numpy())
+            else:
+                raise RuntimeError(
+                    "Attention module has no qkv layer; unsupported attention layout"
+                )
+
+            # Advance token sequence through the full block for the next layer
             x = blk(x)
-        else:
-            # As fallback, try to run the block and capture attention via attribute
-            # Many timm implementations don't expose attn weights; we then abort
-            try:
-                # If attn_mod.forward returns (x, attn) this will fail safely
-                out = blk(x)
-                x = out
-                raise RuntimeError("Could not extract qkv weights from attention module")
-            except Exception:
-                raise RuntimeError("Unable to compute attention rollout for this model (unsupported attention layout)")
 
-    # Perform rollout: start with identity
+    # Attention rollout: propagate attention through layers
     att_mat = np.eye(attentions[0].shape[0])
     for a in attentions:
-        a = a + np.eye(a.shape[0])  # add residual
-        # normalize rows
-        a = a / a.sum(axis=-1, keepdims=True)
+        a = a + np.eye(a.shape[0])          # add residual connection
+        a = a / (a.sum(axis=-1, keepdims=True) + 1e-8)
         att_mat = a @ att_mat
 
-    # Take cls token's attention to patches (exclude cls itself)
+    # CLS token's attention to every patch
     cls_attn = att_mat[0, 1:]
-    # reshape to patch grid
     patch_count = cls_attn.shape[0]
-    # infer Hp, Wp from earlier
-    Hp = int((patch_count) ** 0.5)
-    Wp = Hp
+    Hp = int(round(patch_count ** 0.5))
+    Wp = patch_count // Hp
     heat = cls_attn.reshape(Hp, Wp)
     heat = (heat - heat.min()) / max(float(heat.max() - heat.min()), 1e-8)
-    heat = torch.tensor(heat)
-    heat = torch.nn.functional.interpolate(heat.unsqueeze(0).unsqueeze(0), size=IMAGE_SIZE, mode="bilinear", align_corners=False)
-    return heat.squeeze().cpu().numpy()
+    heat_t = torch.tensor(heat, dtype=torch.float32)
+    heat_t = torch.nn.functional.interpolate(
+        heat_t.unsqueeze(0).unsqueeze(0), size=IMAGE_SIZE, mode="bilinear", align_corners=False
+    )
+    return heat_t.squeeze().cpu().numpy()
 
 
 def _gradcam_on_patch_embed(model, tensor, target_idx: int):
@@ -607,15 +626,16 @@ def _gradcam_on_patch_embed(model, tensor, target_idx: int):
     if not _HAS_TORCH:
         raise RuntimeError("PyTorch required for Grad-CAM")
 
-    backbone = model
-    if not hasattr(backbone, "patch_embed"):
-        raise RuntimeError("Model does not expose patch_embed; cannot compute Grad-CAM")
+    # Unwrap to the actual ViT backbone so we can reach patch_embed.
+    # The full wrapper model is still used for the forward/backward pass so
+    # that gradient flows through every layer (including a custom head).
+    vit_backbone = _get_vit_backbone(model)
+    if not hasattr(vit_backbone, "patch_embed"):
+        raise RuntimeError("ViT backbone does not expose patch_embed; cannot compute Grad-CAM")
 
-    # Forward with gradient tracking on patch embedding activations
-    backbone.eval()
-    # Hook to store activations and grads
-    activations = {}
-    grads = {}
+    model.eval()
+    activations: dict = {}
+    grads: dict = {}
 
     def forward_hook(module, inp, out):
         activations['value'] = out.detach()
@@ -623,19 +643,19 @@ def _gradcam_on_patch_embed(model, tensor, target_idx: int):
     def backward_hook(module, grad_in, grad_out):
         grads['value'] = grad_out[0].detach()
 
-    proj = backbone.patch_embed.proj
+    proj = vit_backbone.patch_embed.proj
     h_fwd = proj.register_forward_hook(forward_hook)
     h_bwd = proj.register_full_backward_hook(backward_hook)
 
     tensor_req = tensor.clone().detach().requires_grad_(True)
-    out = backbone(tensor_req)
+    out = model(tensor_req)  # forward through the full wrapper
     if out.ndim == 2 and out.shape[-1] == 2:
         score = torch.softmax(out, dim=1)[0, target_idx]
     else:
         out = out.view(-1)
         score = out[0] if target_idx == 1 else (1.0 - out[0])
 
-    backbone.zero_grad(set_to_none=True)
+    model.zero_grad(set_to_none=True)
     score.backward(retain_graph=False)
 
     h_fwd.remove()
@@ -646,14 +666,13 @@ def _gradcam_on_patch_embed(model, tensor, target_idx: int):
 
     act = activations['value']  # (B, C, Hp, Wp)
     grad = grads['value']       # (B, C, Hp, Wp)
-    weights = grad.mean(dim=(2, 3), keepdim=True)  # (B, C, 1, 1)
+    weights = grad.mean(dim=(2, 3), keepdim=True)  # GAP over spatial dims
     cam = (weights * act).sum(dim=1, keepdim=True)  # (B, 1, Hp, Wp)
     cam = torch.relu(cam)
     cam = cam - cam.min()
     cam = cam / (cam.max() + 1e-8)
     cam = torch.nn.functional.interpolate(cam, size=IMAGE_SIZE, mode='bilinear', align_corners=False)
-    heat = cam[0, 0].cpu().numpy()
-    return heat
+    return cam[0, 0].cpu().numpy()
 
 
 def generate_explainability_cams(
@@ -667,10 +686,18 @@ def generate_explainability_cams(
     Returns a dict with keys: 'attention_path', 'gradcam_path', 'combined_path'
     Paths may be empty strings if generation failed and a fallback was used instead.
     """
+    _ensure_model_ready()
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
     attention_path = output_prefix.with_name(output_prefix.stem + "_attention.png")
     gradcam_path = output_prefix.with_name(output_prefix.stem + "_gradcam.png")
     combined_path = output_prefix.with_name(output_prefix.stem + "_combined.png")
+
+    if not is_real_model_loaded() or not MODELS:
+        fallback = generate_explainability_cam(
+            input_tensor, base_rgb, predicted_idx,
+            output_prefix.with_name(output_prefix.stem + "_cam.png"),
+        )
+        return {"attention_path": "", "gradcam_path": "", "combined_path": fallback}
 
     attention_saved = ""
     gradcam_saved = ""
@@ -684,7 +711,8 @@ def generate_explainability_cams(
         blended = (0.6 * base_rgb_r + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
         Image.fromarray(blended).save(attention_path)
         attention_saved = str(attention_path)
-    except Exception:
+    except Exception as exc:
+        print(f"[XAI] Attention rollout failed: {exc}")
         attention_saved = ""
 
     # Attempt Grad-CAM
@@ -696,7 +724,8 @@ def generate_explainability_cams(
         blended = (0.6 * base_rgb_r + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
         Image.fromarray(blended).save(gradcam_path)
         gradcam_saved = str(gradcam_path)
-    except Exception:
+    except Exception as exc:
+        print(f"[XAI] Grad-CAM failed: {exc}")
         gradcam_saved = ""
 
     # Create a simple combined image (side-by-side of available maps)
@@ -812,3 +841,72 @@ def generate_explainability_cam(
         blended = (0.6 * base_rgb.astype(np.float32) + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
         Image.fromarray(blended).save(output_path)
         return str(output_path)
+
+
+# ---------------------------------------------------------------------------
+# Model discovery and hot-swapping
+# ---------------------------------------------------------------------------
+
+def list_available_models() -> list[dict]:
+    """Return metadata for every discovered model checkpoint file.
+
+    Each entry contains path, name, exists, and active.
+    """
+    result: list[dict] = []
+    seen: set[str] = set()
+    current_active = ACTIVE_MODEL_PATH
+    for p in candidate_model_paths():
+        key = str(p.resolve()) if p.exists() else str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        name = _extract_model_name(p, {})
+        resolved = str(p.resolve()) if p.exists() else str(p)
+        result.append({
+            "path": resolved,
+            "name": name,
+            "exists": p.exists(),
+            "active": resolved == current_active,
+        })
+    return result
+
+
+def set_active_model(model_path: str) -> dict:
+    """Load a checkpoint and make it the primary inference model.
+
+    Replaces only the first slot in MODELS so any secondary model (used
+    for ensemble) is preserved.  Updates all module-level globals atomically.
+    """
+    global MODELS, ACTIVE_MODEL_INFOS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS
+    global ACTIVE_MODEL_PATH, ACTIVE_MODEL_NAME, ACTIVE_MODEL_PATHS
+
+    if not (_HAS_TORCH and _HAS_TIMM):
+        raise RuntimeError("PyTorch / timm not available; cannot load a model checkpoint.")
+
+    path = Path(model_path)
+    if not path.exists():
+        alt = PACKAGE_DIR / "models" / path.name
+        if alt.exists():
+            path = alt
+        else:
+            raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+
+    model, model_name, metrics = _load_real_model(path)
+    resolved = str(path.resolve())
+
+    new_info: dict = {"path": resolved, "name": model_name, "metrics": metrics}
+    if MODELS:
+        MODELS[0] = model
+        if ACTIVE_MODEL_INFOS:
+            ACTIVE_MODEL_INFOS[0] = new_info
+        else:
+            ACTIVE_MODEL_INFOS = [new_info]
+    else:
+        MODELS = [model]
+        ACTIVE_MODEL_INFOS = [new_info]
+
+    MODEL_TYPE = "real"
+    ACTIVE_MODEL_PATHS = [info["path"] for info in ACTIVE_MODEL_INFOS]
+    ACTIVE_MODEL_PATH = resolved
+    ACTIVE_MODEL_NAME = model_name
+    return {"name": model_name, "path": resolved, "metrics": metrics}

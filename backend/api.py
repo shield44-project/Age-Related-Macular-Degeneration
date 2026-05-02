@@ -11,7 +11,9 @@ if __package__:
         generate_explainability_cam,
         generate_explainability_cams,
         get_model_status,
+        list_available_models,
         predict_probabilities,
+        set_active_model,
     )
     from .preprocessing import preprocess_for_inference, is_valid_fundus_image, decode_image_bytes
     from .database import (
@@ -28,7 +30,9 @@ else:
         generate_explainability_cam,
         generate_explainability_cams,
         get_model_status,
+        list_available_models,
         predict_probabilities,
+        set_active_model,
     )
     from preprocessing import preprocess_for_inference, is_valid_fundus_image, decode_image_bytes
     from database import (
@@ -265,3 +269,37 @@ def patients_clear():
     if not result.get("success"):
         return jsonify({"error": result.get("message", "Clear failed.")}), 500
     return jsonify({"success": True, "deleted": result.get("deleted", 0)})
+
+
+# ---------------------------------------------------------------------------
+# Model management endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/models")
+def models_list():
+    """Return all discovered model checkpoint files with active-model marker."""
+    available = list_available_models()
+    return jsonify({"models": available, "count": len(available)})
+
+
+@app.post("/models/active")
+def models_set_active():
+    """Switch the active inference model to the checkpoint at the given path.
+
+    Expected JSON body: ``{"path": "/absolute/or/relative/path/to/model.pth"}``
+    """
+    payload = request.get_json(silent=True) or {}
+    model_path = payload.get("path", "").strip()
+    if not model_path:
+        return jsonify({"error": "Missing 'path' in request body."}), 400
+    try:
+        result = set_active_model(model_path)
+        return jsonify({
+            "success": True,
+            "model_name": result["name"],
+            "model_path": result["path"],
+        })
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"error": f"Failed to load model: {str(exc)}"}), 500
