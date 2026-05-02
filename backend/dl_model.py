@@ -609,7 +609,9 @@ def _attention_rollout_for_vit(model, tensor, discard_ratio: float = 0.9):
     cls_attn = att_mat[0, 1:]
     patch_count = cls_attn.shape[0]
     Hp = int(round(patch_count ** 0.5))
-    Wp = patch_count // Hp
+    Wp = int(round(patch_count / Hp)) if Hp > 0 else patch_count
+    # Safety: trim or pad so Hp*Wp == patch_count
+    cls_attn = cls_attn[: Hp * Wp]
     heat = cls_attn.reshape(Hp, Wp)
     heat = (heat - heat.min()) / max(float(heat.max() - heat.min()), 1e-8)
     heat_t = torch.tensor(heat, dtype=torch.float32)
@@ -874,7 +876,11 @@ def list_available_models() -> list[dict]:
 def set_active_model(model_path: str) -> dict:
     """Load a checkpoint and make it the primary inference model.
 
-    Replaces only the first slot in MODELS so any secondary model (used
+    The requested path must resolve to a file inside the project's
+    ``backend/models`` directory (or a subdirectory of it) to prevent
+    path-injection attacks that could load arbitrary files from the filesystem.
+
+    Replaces only the first slot in ``MODELS`` so any secondary model (used
     for ensemble) is preserved.  Updates all module-level globals atomically.
     """
     global MODELS, ACTIVE_MODEL_INFOS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS
@@ -883,16 +889,29 @@ def set_active_model(model_path: str) -> dict:
     if not (_HAS_TORCH and _HAS_TIMM):
         raise RuntimeError("PyTorch / timm not available; cannot load a model checkpoint.")
 
-    path = Path(model_path)
-    if not path.exists():
-        alt = PACKAGE_DIR / "models" / path.name
-        if alt.exists():
-            path = alt
-        else:
-            raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+    # Validate: the resolved path must be inside the models directory so that
+    # external callers cannot load arbitrary files from the host filesystem.
+    models_root = (PACKAGE_DIR / "models").resolve()
+    candidate_path = Path(model_path)
 
-    model, model_name, metrics = _load_real_model(path)
-    resolved = str(path.resolve())
+    # Try both the supplied path and a fallback by filename inside models_root.
+    resolved_path: Path | None = None
+    for probe in (candidate_path, models_root / candidate_path.name):
+        try:
+            r = probe.resolve()
+            if r.exists() and str(r).startswith(str(models_root)):
+                resolved_path = r
+                break
+        except Exception:
+            continue
+
+    if resolved_path is None:
+        raise FileNotFoundError(
+            "Model checkpoint not found or path is outside the allowed models directory."
+        )
+
+    model, model_name, metrics = _load_real_model(resolved_path)
+    resolved = str(resolved_path)
 
     new_info: dict = {"path": resolved, "name": model_name, "metrics": metrics}
     if MODELS:

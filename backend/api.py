@@ -299,7 +299,8 @@ def models_set_active():
             "model_name": result["name"],
             "model_path": result["path"],
         })
-    except FileNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 404
+    except FileNotFoundError:
+        return jsonify({"error": "Model checkpoint not found or not permitted."}), 404
     except Exception as exc:
-        return jsonify({"error": f"Failed to load model: {str(exc)}"}), 500
+        print(f"[models/active] Failed to load model: {exc}")
+        return jsonify({"error": "Failed to load the requested model checkpoint."}), 500

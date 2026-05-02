@@ -583,8 +583,6 @@ private:
             if (models.isEmpty()) return;
 
             modelComboUpdating = true;
-            const int prevIndex = modelSelectorCombo->currentIndex();
-            const QString prevPath = modelSelectorCombo->currentData().toString();
             modelSelectorCombo->clear();
 
             int activeIndex = 0;
@@ -609,7 +607,6 @@ private:
             modelSelectorCombo->setCurrentIndex(activeIndex);
             modelSelectorCombo->setEnabled(modelSelectorCombo->count() > 0);
             modelComboUpdating = false;
-            (void)prevIndex;
         });
     }
 
