@@ -752,29 +752,28 @@ def generate_explainability_cam(
         return str(output_path)
 
     primary_model = MODELS[0]
-    # Try attention-rollout (preferred for ViT), then Grad-CAM on patch embeddings,
+    # Try Grad-CAM on patch embeddings first, fall back to attention rollout,
     # then fall back to input-gradient saliency.
-    # Prepare tensor forms for the explainers (on DEVICE)
     try:
-        tensor = _as_input_tensor(input_tensor, requires_grad=False)
-        # Attempt attention rollout
-        try:
-            heat = _attention_rollout_for_vit(primary_model, tensor)
-            heat_rgb = _jet_colormap(heat)
-            base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
-            blended = (0.6 * base_rgb + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
-            Image.fromarray(blended).save(output_path)
-            return str(output_path)
-        except Exception:
-            pass
-
-        # Attempt Grad-CAM on patch embedding
+        # Attempt Grad-CAM on patch embedding (primary explainability method)
         try:
             tensor_g = _as_input_tensor(input_tensor, requires_grad=True)
             heat = _gradcam_on_patch_embed(primary_model, tensor_g, int(predicted_idx))
             heat_rgb = _jet_colormap(heat)
             base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
-            blended = (0.6 * base_rgb + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
+            blended = (0.5 * base_rgb + 0.5 * heat_rgb).clip(0, 255).astype(np.uint8)
+            Image.fromarray(blended).save(output_path)
+            return str(output_path)
+        except Exception:
+            pass
+
+        # Fall back to attention rollout
+        try:
+            tensor = _as_input_tensor(input_tensor, requires_grad=False)
+            heat = _attention_rollout_for_vit(primary_model, tensor)
+            heat_rgb = _jet_colormap(heat)
+            base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
+            blended = (0.5 * base_rgb + 0.5 * heat_rgb).clip(0, 255).astype(np.uint8)
             Image.fromarray(blended).save(output_path)
             return str(output_path)
         except Exception:
