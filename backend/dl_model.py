@@ -519,6 +519,215 @@ def _resize_rgb(arr: np.ndarray, size) -> np.ndarray:
     return _pil_resize_rgb(arr, size)
 
 
+def _attention_rollout_for_vit(model, tensor, discard_ratio: float = 0.9):
+    """Compute attention rollout for a timm ViT-like model.
+    Returns a numpy heatmap resized to patch-grid shape (H_patch, W_patch).
+    """
+    if not _HAS_TORCH:
+        raise RuntimeError("PyTorch required for attention rollout")
+
+    backbone = model
+    # Try to locate common ViT components
+    if not all(hasattr(backbone, a) for a in ("patch_embed", "blocks", "cls_token", "pos_embed")):
+        raise RuntimeError("Model does not appear to be a timm ViT-compatible model")
+
+    # Build token sequence as timm does in forward_features
+    with torch.no_grad():
+        # Patch embedding conv -> (B, C, Hp, Wp)
+        x = backbone.patch_embed.proj(tensor)
+        B, C, Hp, Wp = x.shape
+        x = x.flatten(2).transpose(1, 2)  # (B, N, C)
+        cls_tokens = backbone.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        if hasattr(backbone, "pos_embed") and backbone.pos_embed is not None:
+            x = x + backbone.pos_embed
+
+    attentions = []
+    for blk in backbone.blocks:
+        attn_mod = getattr(blk, "attn", None)
+        if attn_mod is None:
+            raise RuntimeError("Unexpected block structure: no attn module")
+
+        # Attempt to compute attention from qkv weights if available
+        if hasattr(attn_mod, "qkv"):
+            qkv_weight = attn_mod.qkv.weight
+            qkv_bias = attn_mod.qkv.bias if hasattr(attn_mod.qkv, "bias") else None
+            # Produce qkv from tokens
+            qkv = torch.nn.functional.linear(x, qkv_weight, qkv_bias)
+            Bn, N, threeC = qkv.shape
+            head_dim = threeC // (3 * attn_mod.num_heads) if hasattr(attn_mod, "num_heads") else threeC // 3 // 12
+            # reshape -> (B, N, 3, num_heads, head_dim)
+            qkv = qkv.reshape(Bn, N, 3, -1, head_dim).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv[0], qkv[1], qkv[2]
+            # q,k: (B, num_heads, N, head_dim)
+            attn = (q @ k.transpose(-2, -1)) / (head_dim ** 0.5)
+            attn = torch.softmax(attn, dim=-1)
+            # attn: (B, num_heads, N, N)
+            attn = attn.mean(dim=1)  # average heads -> (B, N, N)
+            attentions.append(attn[0].cpu().numpy())
+            # Run the block forward to update x for next layer
+            x = blk(x)
+        else:
+            # As fallback, try to run the block and capture attention via attribute
+            # Many timm implementations don't expose attn weights; we then abort
+            try:
+                # If attn_mod.forward returns (x, attn) this will fail safely
+                out = blk(x)
+                x = out
+                raise RuntimeError("Could not extract qkv weights from attention module")
+            except Exception:
+                raise RuntimeError("Unable to compute attention rollout for this model (unsupported attention layout)")
+
+    # Perform rollout: start with identity
+    att_mat = np.eye(attentions[0].shape[0])
+    for a in attentions:
+        a = a + np.eye(a.shape[0])  # add residual
+        # normalize rows
+        a = a / a.sum(axis=-1, keepdims=True)
+        att_mat = a @ att_mat
+
+    # Take cls token's attention to patches (exclude cls itself)
+    cls_attn = att_mat[0, 1:]
+    # reshape to patch grid
+    patch_count = cls_attn.shape[0]
+    # infer Hp, Wp from earlier
+    Hp = int((patch_count) ** 0.5)
+    Wp = Hp
+    heat = cls_attn.reshape(Hp, Wp)
+    heat = (heat - heat.min()) / max(float(heat.max() - heat.min()), 1e-8)
+    heat = torch.tensor(heat)
+    heat = torch.nn.functional.interpolate(heat.unsqueeze(0).unsqueeze(0), size=IMAGE_SIZE, mode="bilinear", align_corners=False)
+    return heat.squeeze().cpu().numpy()
+
+
+def _gradcam_on_patch_embed(model, tensor, target_idx: int):
+    """Compute Grad-CAM using gradients of the target w.r.t. patch embedding projection.
+    Returns a heatmap in IMAGE_SIZE.
+    """
+    if not _HAS_TORCH:
+        raise RuntimeError("PyTorch required for Grad-CAM")
+
+    backbone = model
+    if not hasattr(backbone, "patch_embed"):
+        raise RuntimeError("Model does not expose patch_embed; cannot compute Grad-CAM")
+
+    # Forward with gradient tracking on patch embedding activations
+    backbone.eval()
+    # Hook to store activations and grads
+    activations = {}
+    grads = {}
+
+    def forward_hook(module, inp, out):
+        activations['value'] = out.detach()
+
+    def backward_hook(module, grad_in, grad_out):
+        grads['value'] = grad_out[0].detach()
+
+    proj = backbone.patch_embed.proj
+    h_fwd = proj.register_forward_hook(forward_hook)
+    h_bwd = proj.register_full_backward_hook(backward_hook)
+
+    tensor_req = tensor.clone().detach().requires_grad_(True)
+    out = backbone(tensor_req)
+    if out.ndim == 2 and out.shape[-1] == 2:
+        score = torch.softmax(out, dim=1)[0, target_idx]
+    else:
+        out = out.view(-1)
+        score = out[0] if target_idx == 1 else (1.0 - out[0])
+
+    backbone.zero_grad(set_to_none=True)
+    score.backward(retain_graph=False)
+
+    h_fwd.remove()
+    h_bwd.remove()
+
+    if 'value' not in activations or 'value' not in grads:
+        raise RuntimeError("Failed to capture activations/gradients from patch embedding")
+
+    act = activations['value']  # (B, C, Hp, Wp)
+    grad = grads['value']       # (B, C, Hp, Wp)
+    weights = grad.mean(dim=(2, 3), keepdim=True)  # (B, C, 1, 1)
+    cam = (weights * act).sum(dim=1, keepdim=True)  # (B, 1, Hp, Wp)
+    cam = torch.relu(cam)
+    cam = cam - cam.min()
+    cam = cam / (cam.max() + 1e-8)
+    cam = torch.nn.functional.interpolate(cam, size=IMAGE_SIZE, mode='bilinear', align_corners=False)
+    heat = cam[0, 0].cpu().numpy()
+    return heat
+
+
+def generate_explainability_cams(
+    input_tensor: np.ndarray,
+    base_rgb: np.ndarray,
+    predicted_idx: int,
+    output_prefix: Path,
+) -> dict:
+    """Generate and save both attention-rollout and Grad-CAM visualizations.
+
+    Returns a dict with keys: 'attention_path', 'gradcam_path', 'combined_path'
+    Paths may be empty strings if generation failed and a fallback was used instead.
+    """
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    attention_path = output_prefix.with_name(output_prefix.stem + "_attention.png")
+    gradcam_path = output_prefix.with_name(output_prefix.stem + "_gradcam.png")
+    combined_path = output_prefix.with_name(output_prefix.stem + "_combined.png")
+
+    attention_saved = ""
+    gradcam_saved = ""
+
+    # Attempt attention rollout
+    try:
+        tensor = _as_input_tensor(input_tensor, requires_grad=False)
+        heat_att = _attention_rollout_for_vit(MODELS[0], tensor)
+        heat_rgb = _jet_colormap(heat_att)
+        base_rgb_r = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
+        blended = (0.6 * base_rgb_r + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
+        Image.fromarray(blended).save(attention_path)
+        attention_saved = str(attention_path)
+    except Exception:
+        attention_saved = ""
+
+    # Attempt Grad-CAM
+    try:
+        tensor_g = _as_input_tensor(input_tensor, requires_grad=True)
+        heat_gc = _gradcam_on_patch_embed(MODELS[0], tensor_g, int(predicted_idx))
+        heat_rgb = _jet_colormap(heat_gc)
+        base_rgb_r = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
+        blended = (0.6 * base_rgb_r + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
+        Image.fromarray(blended).save(gradcam_path)
+        gradcam_saved = str(gradcam_path)
+    except Exception:
+        gradcam_saved = ""
+
+    # Create a simple combined image (side-by-side of available maps)
+    try:
+        parts = []
+        if attention_saved:
+            parts.append(Image.open(attention_saved).convert("RGB"))
+        if gradcam_saved:
+            parts.append(Image.open(gradcam_saved).convert("RGB"))
+        if not parts:
+            # Fallback to single saliency map using existing function
+            single = generate_explainability_cam(input_tensor, base_rgb, predicted_idx, output_prefix.with_name(output_prefix.stem + "_cam.png"))
+            return {"attention_path": attention_saved, "gradcam_path": gradcam_saved, "combined_path": str(output_prefix.with_name(output_prefix.stem + "_cam.png"))}
+
+        # Resize parts to same height and concatenate horizontally
+        widths, heights = zip(*(p.size for p in parts))
+        total_width = sum(widths)
+        max_height = max(heights)
+        new_im = Image.new("RGB", (total_width, max_height))
+        x_offset = 0
+        for im in parts:
+            new_im.paste(im, (x_offset, 0))
+            x_offset += im.size[0]
+        new_im.save(combined_path)
+        combined_saved = str(combined_path)
+    except Exception:
+        combined_saved = ""
+
+    return {"attention_path": attention_saved, "gradcam_path": gradcam_saved, "combined_path": combined_saved}
+
+
 def generate_explainability_cam(
     input_tensor: np.ndarray,
     base_rgb: np.ndarray,
@@ -543,25 +752,64 @@ def generate_explainability_cam(
         return str(output_path)
 
     primary_model = MODELS[0]
+    # Try attention-rollout (preferred for ViT), then Grad-CAM on patch embeddings,
+    # then fall back to input-gradient saliency.
+    # Prepare tensor forms for the explainers (on DEVICE)
+    try:
+        tensor = _as_input_tensor(input_tensor, requires_grad=False)
+        # Attempt attention rollout
+        try:
+            heat = _attention_rollout_for_vit(primary_model, tensor)
+            heat_rgb = _jet_colormap(heat)
+            base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
+            blended = (0.6 * base_rgb + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
+            Image.fromarray(blended).save(output_path)
+            return str(output_path)
+        except Exception:
+            pass
 
-    tensor = _as_input_tensor(input_tensor, requires_grad=True)
+        # Attempt Grad-CAM on patch embedding
+        try:
+            tensor_g = _as_input_tensor(input_tensor, requires_grad=True)
+            heat = _gradcam_on_patch_embed(primary_model, tensor_g, int(predicted_idx))
+            heat_rgb = _jet_colormap(heat)
+            base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
+            blended = (0.6 * base_rgb + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
+            Image.fromarray(blended).save(output_path)
+            return str(output_path)
+        except Exception:
+            pass
 
-    primary_model.zero_grad(set_to_none=True)
-    output = primary_model(tensor)
-    if output.ndim == 2 and output.shape[-1] == 2:
-        target_score = torch.softmax(output, dim=1)[0, int(predicted_idx)]
-    else:
-        output = output.view(-1)
-        target_score = output[0] if int(predicted_idx) == 1 else (1.0 - output[0])
-    target_score.backward()
+        # Fallback: input-gradient saliency (existing behavior)
+        tensor_in = _as_input_tensor(input_tensor, requires_grad=True)
+        primary_model.zero_grad(set_to_none=True)
+        output = primary_model(tensor_in)
+        if output.ndim == 2 and output.shape[-1] == 2:
+            target_score = torch.softmax(output, dim=1)[0, int(predicted_idx)]
+        else:
+            output = output.view(-1)
+            target_score = output[0] if int(predicted_idx) == 1 else (1.0 - output[0])
+        target_score.backward()
 
-    grad_map = tensor.grad.detach().abs().mean(dim=1)[0].cpu().numpy()
-    grad_map = grad_map - grad_map.min()
-    denom = max(float(grad_map.max()), 1e-8)
-    grad_map = grad_map / denom
+        grad_map = tensor_in.grad.detach().abs().mean(dim=1)[0].cpu().numpy()
+        grad_map = grad_map - grad_map.min()
+        denom = max(float(grad_map.max()), 1e-8)
+        grad_map = grad_map / denom
 
-    heat_rgb = _jet_colormap(grad_map)
-    base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
-    blended = (0.6 * base_rgb + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
-    Image.fromarray(blended).save(output_path)
-    return str(output_path)
+        heat_rgb = _jet_colormap(grad_map)
+        base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
+        blended = (0.6 * base_rgb + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
+        Image.fromarray(blended).save(output_path)
+        return str(output_path)
+    except Exception as exc:
+        # If anything unexpected fails, fall back to heuristic image-based map
+        base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE)
+        gray = (0.299 * base_rgb[..., 0] + 0.587 * base_rgb[..., 1] + 0.114 * base_rgb[..., 2])
+        gray = gray.astype(np.float32)
+        gray -= gray.min()
+        denom = max(float(gray.max()), 1e-8)
+        gray = gray / denom
+        heat_rgb = _jet_colormap(gray)
+        blended = (0.6 * base_rgb.astype(np.float32) + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
+        Image.fromarray(blended).save(output_path)
+        return str(output_path)

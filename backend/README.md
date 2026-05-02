@@ -92,6 +92,10 @@ Successful response includes:
 - model_metrics: checkpoint / validation-set metrics for the loaded model
 - model_name, model_paths, models_loaded, backup_active
 
+New behavior: the predict endpoint now also generates attention-rollout and Grad-CAM visualizations
+and saves them to `runtime/cams/` alongside the existing saliency map. The JSON response includes
+the fields `cam_attention_path`, `cam_gradcam_path`, and `cam_combined_path` when available.
+
 Every prediction is auto-saved to the SQLite database (runtime/patient_records.db).
 
 ## Endpoint: GET /patients

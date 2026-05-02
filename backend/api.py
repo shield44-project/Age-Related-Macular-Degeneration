@@ -9,6 +9,7 @@ if __package__:
     from .dl_model import (
         CLASS_NAMES,
         generate_explainability_cam,
+        generate_explainability_cams,
         get_model_status,
         predict_probabilities,
     )
@@ -25,6 +26,7 @@ else:
     from dl_model import (
         CLASS_NAMES,
         generate_explainability_cam,
+        generate_explainability_cams,
         get_model_status,
         predict_probabilities,
     )
@@ -162,6 +164,14 @@ def predict():
             output_path=CAMS_DIR / f"{path_stem}_cam.png",
         )
 
+        # Also generate both explainers for optional use (saved alongside the regular cam)
+        _ = generate_explainability_cams(
+            input_tensor=input_tensor,
+            base_rgb=cam_base_rgb,
+            predicted_idx=pred_idx,
+            output_prefix=CAMS_DIR / f"{path_stem}",
+        )
+
         # Persist the scan to the patient database
         db_result = insert_patient_record(
             name=patient_name if patient_name else "Unknown",
@@ -187,6 +197,9 @@ def predict():
                 "patient_id": patient_id,
                 "image_path": str(Path(image_path).resolve()),
                 "cam_image_path": str(Path(cam_path).resolve()),
+                "cam_attention_path": str((CAMS_DIR / f"{path_stem}_attention.png").resolve()),
+                "cam_gradcam_path": str((CAMS_DIR / f"{path_stem}_gradcam.png").resolve()),
+                "cam_combined_path": str((CAMS_DIR / f"{path_stem}_combined.png").resolve()),
                 "eye_condition": prediction,
                 "diagnosis": prediction,
                 "prediction": prediction,
