@@ -608,9 +608,15 @@ def _attention_rollout_for_vit(model, tensor, discard_ratio: float = 0.9):
     # CLS token's attention to every patch
     cls_attn = att_mat[0, 1:]
     patch_count = cls_attn.shape[0]
+    if patch_count == 0:
+        raise RuntimeError("Attention rollout produced zero patches; cannot generate heatmap.")
     Hp = int(round(patch_count ** 0.5))
-    Wp = int(round(patch_count / Hp)) if Hp > 0 else patch_count
-    # Safety: trim or pad so Hp*Wp == patch_count
+    if Hp == 0:
+        Hp = 1
+    Wp = int(round(patch_count / Hp))
+    if Wp == 0:
+        Wp = 1
+    # Safety: trim so Hp*Wp <= patch_count (handles non-square grids)
     cls_attn = cls_attn[: Hp * Wp]
     heat = cls_attn.reshape(Hp, Wp)
     heat = (heat - heat.min()) / max(float(heat.max() - heat.min()), 1e-8)

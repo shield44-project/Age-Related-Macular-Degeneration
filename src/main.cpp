@@ -583,6 +583,7 @@ private:
             if (models.isEmpty()) return;
 
             modelComboUpdating = true;
+            const QString prevPath = modelSelectorCombo->currentData().toString();
             modelSelectorCombo->clear();
 
             int activeIndex = 0;
