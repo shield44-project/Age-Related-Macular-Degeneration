@@ -5,6 +5,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QComboBox>
 #include <QProgressBar>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -91,12 +92,16 @@ public:
     QPushButton  *exportBtn;
     QLabel       *recordsEmptyLabel;
 
+    // ── Model selector ───────────────────────────────────────────────────────
+    QComboBox    *modelSelectorCombo;
+
     // ── State ────────────────────────────────────────────────────────────────
     bool                  isDarkMode;
     QSettings            *settings;
     QNetworkAccessManager *networkManager;
     QProcess             *backendProcess;
     bool                  backendStartedByGui;
+    bool                  modelComboUpdating = false;
     QList<QJsonObject>    allPatients;   // local cache for search filtering
 
     // ────────────────────────────────────────────────────────────────────────
@@ -120,6 +125,10 @@ public:
         connect(statusTimer, &QTimer::timeout, this, [this]() { refreshBackendStatus(); });
         statusTimer->start(5000);
         refreshBackendStatus();
+
+        // Populate the model selector once the backend is likely to be online.
+        // We schedule it slightly after startup so the health-check reply arrives first.
+        QTimer::singleShot(1000, this, [this]() { refreshModelList(); });
     }
 
     ~AMD_GUI() override {
@@ -191,6 +200,22 @@ private:
         scanCountLabel = new QLabel("Total scans: 0");
         scanCountLabel->setObjectName("infoLabel");
         sideLayout->addWidget(scanCountLabel);
+
+        // ── Model selector ─────────────────────────────────────────────────
+        auto *modelSep = new QFrame();
+        modelSep->setFrameShape(QFrame::HLine);
+        modelSep->setObjectName("separator");
+        sideLayout->addWidget(modelSep);
+
+        QLabel *modelHdr = new QLabel("ACTIVE MODEL");
+        modelHdr->setObjectName("sectionHeader");
+        sideLayout->addWidget(modelHdr);
+
+        modelSelectorCombo = new QComboBox();
+        modelSelectorCombo->setObjectName("sidebarCombo");
+        modelSelectorCombo->setToolTip("Select which model checkpoint to use for inference");
+        modelSelectorCombo->setEnabled(false);
+        sideLayout->addWidget(modelSelectorCombo);
 
         sideLayout->addStretch();
 
@@ -449,6 +474,11 @@ private:
         // Keyboard shortcuts on the records tab
         auto *delShortcut = new QShortcut(QKeySequence(Qt::Key_Delete), patientTable);
         connect(delShortcut, &QShortcut::activated, this, &AMD_GUI::deleteSelectedRecord);
+
+        // Wire up the model selector combo
+        connect(modelSelectorCombo,
+                QOverload<int>::of(&QComboBox::activated),
+                this, &AMD_GUI::onModelSelected);
     }
 
     // ── Slots / helpers ──────────────────────────────────────────────────────
@@ -527,11 +557,90 @@ private:
                 const QString model   = obj.value("model_name").toString("Unknown");
                 backendStatusLabel->setText("Online  |  " + model);
                 backendStatusLabel->setStyleSheet("color: #2ecc71; font-weight: 600;");
+                // Populate model list on first successful health check
+                if (modelSelectorCombo->count() == 0)
+                    refreshModelList();
             } else {
                 backendStatusLabel->setText("Offline");
                 backendStatusLabel->setStyleSheet("color: #e74c3c; font-weight: 600;");
             }
             reply->deleteLater();
+        });
+    }
+
+    void refreshModelList() {
+        QNetworkRequest req(QUrl("http://127.0.0.1:5000/models"));
+        QNetworkReply *reply = networkManager->get(req);
+        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            const QByteArray body = reply->readAll();
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError)
+                return;
+            const QJsonDocument doc = QJsonDocument::fromJson(body);
+            if (!doc.isObject()) return;
+
+            const QJsonArray models = doc.object().value("models").toArray();
+            if (models.isEmpty()) return;
+
+            modelComboUpdating = true;
+            const QString prevPath = modelSelectorCombo->currentData().toString();
+            modelSelectorCombo->clear();
+
+            int activeIndex = 0;
+            for (int i = 0; i < models.size(); ++i) {
+                const QJsonObject m = models[i].toObject();
+                if (!m.value("exists").toBool(true)) continue;
+                const QString name = m.value("name").toString();
+                const QString path = m.value("path").toString();
+                modelSelectorCombo->addItem(name, path);
+                if (m.value("active").toBool(false))
+                    activeIndex = modelSelectorCombo->count() - 1;
+            }
+            // Restore previous selection if it still exists
+            if (!prevPath.isEmpty()) {
+                for (int i = 0; i < modelSelectorCombo->count(); ++i) {
+                    if (modelSelectorCombo->itemData(i).toString() == prevPath) {
+                        activeIndex = i;
+                        break;
+                    }
+                }
+            }
+            modelSelectorCombo->setCurrentIndex(activeIndex);
+            modelSelectorCombo->setEnabled(modelSelectorCombo->count() > 0);
+            modelComboUpdating = false;
+        });
+    }
+
+    void onModelSelected(int index) {
+        if (modelComboUpdating) return;
+        const QString path = modelSelectorCombo->itemData(index).toString();
+        if (path.isEmpty()) return;
+
+        modelSelectorCombo->setEnabled(false);
+        statusBar()->showMessage("Switching model…");
+
+        QNetworkRequest req(QUrl("http://127.0.0.1:5000/models/active"));
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        const QJsonObject payload{{QStringLiteral("path"), path}};
+        QNetworkReply *reply = networkManager->post(req, QJsonDocument(payload).toJson());
+        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            const QByteArray body = reply->readAll();
+            const bool ok = (reply->error() == QNetworkReply::NoError);
+            reply->deleteLater();
+            if (ok) {
+                const QJsonObject obj = QJsonDocument::fromJson(body).object();
+                const QString name = obj.value("model_name").toString();
+                statusBar()->showMessage("Model switched to: " + name);
+                backendStatusLabel->setText("Online  |  " + name);
+                backendStatusLabel->setStyleSheet("color: #2ecc71; font-weight: 600;");
+            } else {
+                statusBar()->showMessage("Model switch failed.");
+                QMessageBox::warning(this, "Model Switch Failed",
+                    "Could not switch to the selected model.\n"
+                    "Check that the backend is running and the checkpoint is valid.");
+            }
+            modelSelectorCombo->setEnabled(true);
+            refreshModelList();  // Refresh to update active indicator
         });
     }
 
@@ -1082,6 +1191,24 @@ private:
             QLineEdit#sidebarInput:focus, QSpinBox#sidebarInput:focus {
                 border: 1px solid #1a1f2b;
             }
+            QComboBox#sidebarCombo {
+                background-color: #f5f6f8;
+                color: #1a1f2b;
+                border: 1px solid #e3e6eb;
+                border-radius: 6px;
+                padding: 7px 10px;
+            }
+            QComboBox#sidebarCombo:focus { border: 1px solid #1a1f2b; }
+            QComboBox#sidebarCombo:disabled { color: #9ca3af; }
+            QComboBox#sidebarCombo::drop-down { border: none; width: 18px; }
+            QComboBox#sidebarCombo QAbstractItemView {
+                background-color: #ffffff;
+                color: #1a1f2b;
+                selection-background-color: #dbeafe;
+                selection-color: #0f172a;
+                border: 1px solid #e3e6eb;
+                border-radius: 4px;
+            }
             QPushButton#primaryBtn {
                 background-color: #1a1f2b;
                 color: #ffffff;
@@ -1322,6 +1449,24 @@ private:
             }
             QLineEdit#sidebarInput:focus, QSpinBox#sidebarInput:focus {
                 border: 1px solid #ffffff;
+            }
+            QComboBox#sidebarCombo {
+                background-color: #0a0a0a;
+                color: #e5e7eb;
+                border: 1px solid #1a1a1a;
+                border-radius: 6px;
+                padding: 7px 10px;
+            }
+            QComboBox#sidebarCombo:focus { border: 1px solid #ffffff; }
+            QComboBox#sidebarCombo:disabled { color: #4b5563; }
+            QComboBox#sidebarCombo::drop-down { border: none; width: 18px; }
+            QComboBox#sidebarCombo QAbstractItemView {
+                background-color: #0a0a0a;
+                color: #e5e7eb;
+                selection-background-color: #1f2937;
+                selection-color: #ffffff;
+                border: 1px solid #1a1a1a;
+                border-radius: 4px;
             }
             QPushButton#primaryBtn {
                 background-color: #ffffff;
