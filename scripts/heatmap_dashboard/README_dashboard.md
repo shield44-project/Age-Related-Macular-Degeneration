@@ -10,7 +10,9 @@ Through terminal, get inside the heatmap_dashboard folder.
 
 run these scripts: (copy paste)
 
+
 pip install -r requirements_dashboard.txt
+
 streamlit run gradcam_dashboard.py
 
 ---
