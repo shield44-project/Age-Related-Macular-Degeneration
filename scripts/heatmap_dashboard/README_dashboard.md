@@ -4,6 +4,13 @@ A Streamlit tool to compare **Grad-CAM**, **Grad-CAM++**, **Score-CAM**,
 **Guided Grad-CAM** and **Attention Rollout** side-by-side on any `.pth`
 checkpoint.
 
+
+How to run:
+Through terminal, get inside the heatmap_dashboard folder.
+
+run these scripts:
+pip install -r requirements_dashboard.txt
+streamlit run gradcam_dashboard.py
 ---
 
 ## Quick Start
