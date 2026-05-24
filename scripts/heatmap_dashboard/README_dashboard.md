@@ -8,9 +8,11 @@ checkpoint.
 How to run:
 Through terminal, get inside the heatmap_dashboard folder.
 
-run these scripts:
+run these scripts: (copy paste)
+
 pip install -r requirements_dashboard.txt
 streamlit run gradcam_dashboard.py
+
 ---
 
 ## Quick Start
