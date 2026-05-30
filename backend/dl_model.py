@@ -44,6 +44,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 DEFAULT_MODEL_PATH = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model.pth"
 DEFAULT_MODEL_PATH_IMPROVED = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model_improved.pth"
+DEFAULT_DEIT_MODEL_PATH = PACKAGE_DIR / "models" / "DeiT-S" / "best_deit_model.pth"
 DEVICE = torch.device("cuda" if (_HAS_TORCH and torch.cuda.is_available()) else "cpu") if _HAS_TORCH else None
 MAX_MODELS = 2
 BACKUP_MODEL_TYPE = "backup"
@@ -106,9 +107,33 @@ if _HAS_TORCH and _HAS_TIMM:
 
         def forward(self, x):
             return self.backbone(x)
+
+    class DeiTBinaryClassifier(nn.Module):
+        def __init__(self, use_layernorm: bool):
+            super().__init__()
+            self.backbone = timm.create_model(
+                "deit_small_patch16_224",
+                pretrained=False,
+                num_classes=0,
+            )
+            head_layers = []
+            if use_layernorm:
+                head_layers.append(nn.LayerNorm(384))
+            head_layers.extend([
+                nn.Dropout(0.4),
+                nn.Linear(384, 256),
+                nn.GELU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, 1),
+            ])
+            self.head = nn.Sequential(*head_layers)
+
+        def forward(self, x):
+            return self.head(self.backbone(x))
 else:
     ViTBinaryClassifier = None  # type: ignore
     ViTMultiClassClassifier = None  # type: ignore
+    DeiTBinaryClassifier = None  # type: ignore
 
 
 if _HAS_TORCH and _HAS_TORCHVISION:
@@ -198,6 +223,7 @@ def candidate_model_paths() -> list[Path]:
             if entry:
                 collect_from_configured_path(entry)
 
+    add_if_present(DEFAULT_DEIT_MODEL_PATH)
     add_if_present(DEFAULT_MODEL_PATH_IMPROVED)
     add_if_present(DEFAULT_MODEL_PATH)
 
@@ -225,11 +251,13 @@ def candidate_model_paths() -> list[Path]:
             resolved = p.resolve()
         except Exception:
             resolved = p
-        if resolved == DEFAULT_MODEL_PATH.resolve():
+        if resolved == DEFAULT_DEIT_MODEL_PATH.resolve():
             return 0
-        if resolved == DEFAULT_MODEL_PATH_IMPROVED.resolve():
+        if resolved == DEFAULT_MODEL_PATH.resolve():
             return 1
-        return 2
+        if resolved == DEFAULT_MODEL_PATH_IMPROVED.resolve():
+            return 2
+        return 3
 
     candidates.sort(
         key=lambda p: (
@@ -390,6 +418,13 @@ def _build_timm_model(arch: str):
     return timm.create_model(arch, pretrained=False, num_classes=2).to(DEVICE).eval()
 
 
+def _build_deit_model(state_dict: dict):
+    if DeiTBinaryClassifier is None:
+        raise RuntimeError("timm not available; cannot build DeiT model.")
+    use_layernorm = any(key.startswith("head.0.") for key in state_dict.keys())
+    return DeiTBinaryClassifier(use_layernorm=use_layernorm).to(DEVICE).eval()
+
+
 def _build_resnet_model():
     if ResNetBinaryClassifier is None:
         raise RuntimeError("Torchvision not available; cannot build ResNet model.")
@@ -414,6 +449,23 @@ def _looks_like_multiclass(state_dict: dict) -> bool:
             except Exception:
                 continue
     return False
+
+
+def _infer_vit_embed_dim(state_dict: dict) -> int | None:
+    token = state_dict.get("backbone.cls_token")
+    if token is None:
+        token = state_dict.get("cls_token")
+    if hasattr(token, "shape") and len(token.shape) >= 3:
+        try:
+            return int(token.shape[-1])
+        except Exception:
+            return None
+    return None
+
+
+def _looks_like_deit_state_dict(state_dict: dict) -> bool:
+    embed_dim = _infer_vit_embed_dim(state_dict)
+    return embed_dim == 384
 
 
 def _looks_like_resnet_backbone(state_dict: dict) -> bool:
@@ -453,6 +505,13 @@ def _load_real_model(model_path: Path):
             return model, model_name, metrics
         except Exception as exc:
             print(f"Could not load {model_path} as ResNet model: {exc}")
+
+    if _looks_like_deit_state_dict(state_dict):
+        try:
+            model = _try_load_model(_build_deit_model(state_dict), state_dict, strict=True)
+            return model, model_name, metrics
+        except Exception as exc:
+            print(f"Could not load {model_path} as DeiT model: {exc}")
 
     if checkpoint_arch and _HAS_TIMM:
         try:

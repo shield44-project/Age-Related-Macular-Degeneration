@@ -37,10 +37,11 @@ Model selection is handled in backend/dl_model.py.
 
 Priority order:
 1. Use MODEL_PATH environment variable if provided.
-2. Else use the bundled checkpoint at backend/models/ViT_base/best_vit_model.pth.
-3. If the model file is a wrapped checkpoint, the loader will extract the first supported state_dict key.
-4. If the model file is a Git LFS pointer, the backend will attempt `git lfs pull` once (disable with `AMD_AUTO_PULL_LFS=0`).
-5. If model loading fails or file is missing, use backup heuristic inference.
+2. Else use the bundled checkpoint at backend/models/DeiT-S/best_deit_model.pth.
+3. Next try backend/models/ViT_base/best_vit_model.pth (fallback ViT).
+4. If the model file is a wrapped checkpoint, the loader will extract the first supported state_dict key.
+5. If the model file is a Git LFS pointer, the backend will attempt `git lfs pull` once (disable with `AMD_AUTO_PULL_LFS=0`).
+6. If model loading fails or file is missing, use backup heuristic inference.
 
 Response field model_type tells which one is active:
 - real
@@ -176,6 +177,10 @@ Option 3 (multiple models / ensembling):
 
 Option 4 (CNN / ResNet):
 - Drop a ResNet-style checkpoint at backend/models/CNN/best_resnet_model.pth
+  (auto-detected by the loader).
+
+Option 5 (DeiT-S):
+- Place the DeiT checkpoint at backend/models/DeiT-S/best_deit_model.pth
   (auto-detected by the loader).
 
 ## Train and Evaluate an Improved Model
