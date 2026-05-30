@@ -90,6 +90,9 @@ public:
     QTabWidget   *tabWidget;
     QLabel       *fundusLabel;
     QLabel       *camsLabel;
+    QLabel       *gradCamPlusPlusLabel;
+    QLabel       *scoreCamLabel;
+    QLabel       *guidedGradCamLabel;
     QLabel       *predictionBadge;
     QProgressBar *confidenceBar;
     QLabel       *confidenceValueLabel;
@@ -300,7 +303,7 @@ private:
             QVBoxLayout *vb  = new QVBoxLayout(grp);
             lbl = new QLabel("No image loaded");
             lbl->setAlignment(Qt::AlignCenter);
-            lbl->setFixedSize(330, 330);
+            lbl->setFixedSize(220, 220);
             lbl->setScaledContents(true);
             lbl->setObjectName("imageDisplay");
             vb->addWidget(lbl);
@@ -308,7 +311,10 @@ private:
         };
 
         imgRow->addWidget(makeImgGroup("Fundus Image", fundusLabel));
-        imgRow->addWidget(makeImgGroup("Saliency Map (CAM)", camsLabel));
+        imgRow->addWidget(makeImgGroup("Grad-CAM", camsLabel));
+        imgRow->addWidget(makeImgGroup("Grad-CAM++", gradCamPlusPlusLabel));
+        imgRow->addWidget(makeImgGroup("Score-CAM", scoreCamLabel));
+        imgRow->addWidget(makeImgGroup("Guided Grad-CAM", guidedGradCamLabel));
         imgRow->addStretch();
         analysisLayout->addLayout(imgRow);
 
@@ -542,6 +548,9 @@ private:
         if (!fileName.isEmpty() && QFile::exists(fileName))
             fundusLabel->setPixmap(QPixmap(fileName));
         camsLabel->setText("Processing…");
+        gradCamPlusPlusLabel->setText("Processing…");
+        scoreCamLabel->setText("Processing…");
+        guidedGradCamLabel->setText("Processing…");
         predictionBadge->setText("Analysing…");
         predictionBadge->setStyleSheet("");
         riskLabel->setText("Risk: —");
@@ -832,6 +841,9 @@ private:
                     confidenceBar->setValue(0);
                     confidenceValueLabel->setText("N/A");
                     camsLabel->setText("No saliency map\nfor invalid fundus image");
+                    gradCamPlusPlusLabel->setText("No saliency map\nfor invalid fundus image");
+                    scoreCamLabel->setText("No saliency map\nfor invalid fundus image");
+                    guidedGradCamLabel->setText("No saliency map\nfor invalid fundus image");
                     statusBar()->showMessage("Invalid fundus image selected.");
                 }
                 QMessageBox::warning(this, "Prediction Failed",
@@ -930,12 +942,31 @@ private:
         precisionLabel->setText(fmt("precision"));
         f1Label       ->setText(fmt("f1_score"));
 
-        // ── CAM image ─────────────────────────────────────────────────────
-        const QString camPath = obj.value("cam_image_path").toString();
-        if (!camPath.isEmpty() && QFile::exists(camPath))
-            camsLabel->setPixmap(QPixmap(camPath));
-        else
-            camsLabel->setText("Saliency map\nnot available");
+        // ── CAM images ────────────────────────────────────────────────────
+        auto resolveExistingPath = [&obj](const QStringList &keys) -> QString {
+            for (const QString &key : keys) {
+                const QString path = obj.value(key).toString();
+                if (!path.isEmpty() && QFile::exists(path))
+                    return path;
+            }
+            return {};
+        };
+        auto setCamImage = [&](QLabel *label, const QString &missingText, const QStringList &keys) {
+            const QString path = resolveExistingPath(keys);
+            if (!path.isEmpty())
+                label->setPixmap(QPixmap(path));
+            else
+                label->setText(missingText);
+        };
+
+        setCamImage(camsLabel, "Grad-CAM\nnot available",
+                    {"cam_gradcam_path", "cam_image_path"});
+        setCamImage(gradCamPlusPlusLabel, "Grad-CAM++\nnot available",
+                    {"cam_gradcampp_path", "cam_gradcam_plus_plus_path", "cam_attention_path", "cam_image_path"});
+        setCamImage(scoreCamLabel, "Score-CAM\nnot available",
+                    {"cam_scorecam_path", "cam_combined_path", "cam_image_path"});
+        setCamImage(guidedGradCamLabel, "Guided Grad-CAM\nnot available",
+                    {"cam_guided_gradcam_path", "cam_guided_backprop_path", "cam_attention_path", "cam_image_path"});
 
         statusBar()->showMessage(
             QString("Analysis complete — %1  (confidence: %2%)")
