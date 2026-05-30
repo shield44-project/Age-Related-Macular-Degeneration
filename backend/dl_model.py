@@ -220,8 +220,20 @@ def candidate_model_paths() -> list[Path]:
             add_if_present(match)
 
     # Prefer commonly named best checkpoints first.
+    def _priority(p: Path) -> int:
+        try:
+            resolved = p.resolve()
+        except Exception:
+            resolved = p
+        if resolved == DEFAULT_MODEL_PATH.resolve():
+            return 0
+        if resolved == DEFAULT_MODEL_PATH_IMPROVED.resolve():
+            return 1
+        return 2
+
     candidates.sort(
         key=lambda p: (
+            _priority(p),
             "best" not in p.name.lower(),
             "improved" not in p.name.lower(),
             len(p.parts),
