@@ -1,5 +1,6 @@
 file(REMOVE_RECURSE
   "AMD_GUI_autogen"
+  "CMakeFiles/AMD_GUI.dir/link.d"
   "CMakeFiles/AMD_GUI_autogen.dir/AutogenUsed.txt"
   "CMakeFiles/AMD_GUI_autogen.dir/ParseCache.txt"
   "AMD_GUI_autogen/mocs_compilation.cpp"

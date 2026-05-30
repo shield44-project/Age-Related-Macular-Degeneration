@@ -1,4 +1,5 @@
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,9 @@ DEVICE = torch.device("cuda" if (_HAS_TORCH and torch.cuda.is_available()) else 
 MAX_MODELS = 2
 BACKUP_MODEL_TYPE = "backup"
 DEFAULT_MODEL_NAME = "ViT-B16 AMD Classifier"
+LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
+AUTO_PULL_LFS = os.getenv("AMD_AUTO_PULL_LFS", "1") == "1"
+_LFS_PULL_ATTEMPTS: set[str] = set()
 
 # Reported project metrics shown by the API and GUI.
 DEFAULT_METRICS = {
@@ -198,6 +202,19 @@ def candidate_model_paths() -> list[Path]:
 
 
 def _torch_load_checkpoint(path: Path):
+    if _is_git_lfs_pointer(path):
+        pull_error = _try_pull_lfs_weights(path)
+        if pull_error is None and not _is_git_lfs_pointer(path):
+            pass
+        else:
+            detail = f" Auto-pull failed: {pull_error}" if pull_error else ""
+            raise ValueError(
+                "checkpoint is a Git LFS pointer, not downloaded model weights. "
+                "Install git-lfs and run 'git lfs pull', or place a real .pth file "
+                "in backend/models/ViT_base/."
+                + detail
+            )
+
     # PyTorch 2.6+ defaults weights_only=True, which rejects full checkpoints
     # that include training metadata. We need the full payload here so we can
     # also pull out embedded metrics, so we load with weights_only=False.
@@ -206,6 +223,71 @@ def _torch_load_checkpoint(path: Path):
     except TypeError:
         # Older PyTorch versions don't accept weights_only at all.
         return torch.load(path, map_location="cpu")
+
+
+def _is_git_lfs_pointer(path: Path) -> bool:
+    """Return True when a checkpoint path contains only a Git LFS pointer file."""
+    try:
+        if not path.is_file() or path.stat().st_size > 1024:
+            return False
+        with path.open("rb") as fh:
+            return fh.read(len(LFS_POINTER_PREFIX)) == LFS_POINTER_PREFIX
+    except OSError:
+        return False
+
+
+def _git_lfs_available() -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "lfs", "version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
+
+def _try_pull_lfs_weights(model_path: Path) -> str | None:
+    """Attempt to download Git LFS weights for a pointer file.
+
+    Returns None on success, or an error string when the pull could not be run.
+    """
+    if not AUTO_PULL_LFS:
+        return "Auto-pull disabled (AMD_AUTO_PULL_LFS=0)."
+    try:
+        resolved = str(model_path.resolve())
+    except OSError:
+        resolved = str(model_path)
+    if resolved in _LFS_PULL_ATTEMPTS:
+        return "Auto-pull already attempted for this file."
+    _LFS_PULL_ATTEMPTS.add(resolved)
+
+    if not _git_lfs_available():
+        return "git-lfs is not installed."
+
+    try:
+        include_path = str(model_path.resolve().relative_to(PROJECT_ROOT))
+    except (ValueError, OSError):
+        include_path = resolved
+
+    try:
+        result = subprocess.run(
+            ["git", "lfs", "pull", "--include", include_path],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return f"git lfs pull failed: {exc}"
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return detail or "git lfs pull failed."
+
+    return None
 
 
 def _extract_state_dict(checkpoint: Any) -> dict:
@@ -334,12 +416,13 @@ def load_models_with_fallback(max_models: int = MAX_MODELS):
     loaded_models: list = []
     loaded_infos: list = []
     attempted: list = []
+    load_issues: list[dict] = []
     seen_resolved_paths: set = set()
 
     if not (_HAS_TORCH and _HAS_TIMM):
         msg = "PyTorch / timm not available; running in heuristic backup mode."
         print(msg)
-        return [], [], BACKUP_MODEL_TYPE, msg
+        return [], [], BACKUP_MODEL_TYPE, msg, [{"path": "", "error": msg}]
 
     for model_path in candidate_model_paths():
         attempted.append(str(model_path))
@@ -348,6 +431,7 @@ def load_models_with_fallback(max_models: int = MAX_MODELS):
         resolved_path = str(model_path.resolve())
         if resolved_path in seen_resolved_paths:
             continue
+        seen_resolved_paths.add(resolved_path)
         try:
             model, model_name, metrics = _load_real_model(model_path)
             loaded_models.append(model)
@@ -358,32 +442,33 @@ def load_models_with_fallback(max_models: int = MAX_MODELS):
                     "metrics": metrics,
                 }
             )
-            seen_resolved_paths.add(resolved_path)
             if len(loaded_models) >= max_models:
                 break
         except Exception as exc:
-            print(f"Model load failed at {model_path}: {exc}")
+            message = str(exc)
+            load_issues.append({"path": resolved_path, "error": message})
+            print(f"Model load failed at {model_path}: {message}")
 
     if loaded_models:
         attempted_paths = " | ".join(attempted) if attempted else "<none>"
-        return loaded_models, loaded_infos, "real", attempted_paths
+        return loaded_models, loaded_infos, "real", attempted_paths, load_issues
 
     attempted_paths = " | ".join(attempted) if attempted else "<none>"
     print(f"No usable model checkpoint found. Attempted: {attempted_paths}")
-    return [], [], BACKUP_MODEL_TYPE, attempted_paths
+    return [], [], BACKUP_MODEL_TYPE, attempted_paths, load_issues
 
 
-MODELS, ACTIVE_MODEL_INFOS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS = load_models_with_fallback()
+MODELS, ACTIVE_MODEL_INFOS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS, MODEL_LOAD_ISSUES = load_models_with_fallback()
 ACTIVE_MODEL_PATHS = [info["path"] for info in ACTIVE_MODEL_INFOS]
 ACTIVE_MODEL_PATH = ACTIVE_MODEL_PATHS[0] if ACTIVE_MODEL_PATHS else ATTEMPTED_MODEL_PATHS
 ACTIVE_MODEL_NAME = ACTIVE_MODEL_INFOS[0]["name"] if ACTIVE_MODEL_INFOS else "Backup Heuristic Inference"
 
 
 def _ensure_model_ready() -> None:
-    global MODELS, ACTIVE_MODEL_INFOS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS, ACTIVE_MODEL_PATH, ACTIVE_MODEL_NAME
+    global MODELS, ACTIVE_MODEL_INFOS, ACTIVE_MODEL_PATHS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS, MODEL_LOAD_ISSUES, ACTIVE_MODEL_PATH, ACTIVE_MODEL_NAME
     if MODEL_TYPE == "real":
         return
-    MODELS, ACTIVE_MODEL_INFOS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS = load_models_with_fallback()
+    MODELS, ACTIVE_MODEL_INFOS, MODEL_TYPE, ATTEMPTED_MODEL_PATHS, MODEL_LOAD_ISSUES = load_models_with_fallback()
     ACTIVE_MODEL_PATHS = [info["path"] for info in ACTIVE_MODEL_INFOS]
     ACTIVE_MODEL_PATH = ACTIVE_MODEL_PATHS[0] if ACTIVE_MODEL_PATHS else ATTEMPTED_MODEL_PATHS
     ACTIVE_MODEL_NAME = ACTIVE_MODEL_INFOS[0]["name"] if ACTIVE_MODEL_INFOS else "Backup Heuristic Inference"
@@ -400,6 +485,22 @@ def is_backup_mode() -> bool:
 def get_model_status() -> dict:
     _ensure_model_ready()
     metrics = dict(DEFAULT_METRICS)
+    model_error = ""
+    if MODEL_TYPE != "real":
+        lfs_paths = [
+            issue["path"]
+            for issue in MODEL_LOAD_ISSUES
+            if "Git LFS pointer" in issue.get("error", "")
+        ]
+        if lfs_paths:
+            model_error = (
+                "Model weights are not downloaded. Install git-lfs and run "
+                "'git lfs pull', or replace the pointer file with a real checkpoint."
+            )
+        elif MODEL_LOAD_ISSUES:
+            model_error = MODEL_LOAD_ISSUES[0].get("error", "")
+        else:
+            model_error = "No usable model checkpoint was found."
 
     return {
         "model_type": MODEL_TYPE,
@@ -410,6 +511,8 @@ def get_model_status() -> dict:
         "model_names": [info["name"] for info in ACTIVE_MODEL_INFOS],
         "models_loaded": len(ACTIVE_MODEL_PATHS),
         "attempted_model_paths": ATTEMPTED_MODEL_PATHS,
+        "model_error": model_error,
+        "model_load_issues": MODEL_LOAD_ISSUES,
         "metrics": metrics,
     }
 
@@ -870,10 +973,17 @@ def list_available_models() -> list[dict]:
         seen.add(key)
         name = _extract_model_name(p, {})
         resolved = str(p.resolve()) if p.exists() else str(p)
+        missing_lfs = p.exists() and _is_git_lfs_pointer(p)
+        if missing_lfs:
+            pull_error = _try_pull_lfs_weights(p)
+            if pull_error is None and not _is_git_lfs_pointer(p):
+                missing_lfs = False
         result.append({
             "path": resolved,
             "name": name,
             "exists": p.exists(),
+            "loadable": p.exists() and not missing_lfs,
+            "missing_lfs": missing_lfs,
             "active": resolved == current_active,
         })
     return result
@@ -915,6 +1025,17 @@ def set_active_model(model_path: str) -> dict:
         raise FileNotFoundError(
             "Model checkpoint not found or path is outside the allowed models directory."
         )
+
+    if _is_git_lfs_pointer(resolved_path):
+        pull_error = _try_pull_lfs_weights(resolved_path)
+        if pull_error is None and not _is_git_lfs_pointer(resolved_path):
+            pass
+        else:
+            detail = f" Auto-pull failed: {pull_error}" if pull_error else ""
+            raise RuntimeError(
+                "Model checkpoint is a Git LFS pointer. Run 'git lfs pull' to download weights."
+                + detail
+            )
 
     model, model_name, metrics = _load_real_model(resolved_path)
     resolved = str(resolved_path)

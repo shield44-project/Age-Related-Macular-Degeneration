@@ -9,8 +9,9 @@ set(CMAKE_DEPENDS_LANGUAGES
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "" "AMD_GUI_autogen/timestamp" "custom" "AMD_GUI_autogen/deps"
-  "/workspaces/pediatric-eye-disease-detector/build/AMD_GUI_autogen/mocs_compilation.cpp" "CMakeFiles/AMD_GUI.dir/AMD_GUI_autogen/mocs_compilation.cpp.o" "gcc" "CMakeFiles/AMD_GUI.dir/AMD_GUI_autogen/mocs_compilation.cpp.o.d"
-  "/workspaces/pediatric-eye-disease-detector/src/main.cpp" "CMakeFiles/AMD_GUI.dir/src/main.cpp.o" "gcc" "CMakeFiles/AMD_GUI.dir/src/main.cpp.o.d"
+  "/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/AMD_GUI_autogen/mocs_compilation.cpp" "CMakeFiles/AMD_GUI.dir/AMD_GUI_autogen/mocs_compilation.cpp.o" "gcc" "CMakeFiles/AMD_GUI.dir/AMD_GUI_autogen/mocs_compilation.cpp.o.d"
+  "/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/src/main.cpp" "CMakeFiles/AMD_GUI.dir/src/main.cpp.o" "gcc" "CMakeFiles/AMD_GUI.dir/src/main.cpp.o.d"
+  "" "bin/AMD_GUI" "gcc" "CMakeFiles/AMD_GUI.dir/link.d"
   )
 
 # Targets to which this target links which contain Fortran sources.

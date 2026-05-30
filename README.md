@@ -147,6 +147,17 @@ Run the GUI:
 
 The GUI checks backend health automatically and can start the backend process when needed.
 
+## 🧠 Model Weights (Required for Real Inference)
+
+The default checkpoint (`backend/models/ViT_base/best_vit_model.pth`) is tracked with **Git LFS**. After cloning, download the weights:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+If the weights are missing, the backend falls back to the heuristic backup mode and the GUI will show “Model weights missing”. The backend will also attempt `git lfs pull` once on startup (disable with `AMD_AUTO_PULL_LFS=0`).
+
 ### Packaging (ZIP)
 
 Use the helper script to build, install, and zip the GUI + backend into `dist/`:

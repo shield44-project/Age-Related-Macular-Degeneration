@@ -31,6 +31,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QCoreApplication>
 #include <QDir>
 #include <QTimer>
@@ -46,11 +47,31 @@
 #include <QToolButton>
 #include <QShortcut>
 #include <QKeySequence>
+#include <QLoggingCategory>
 #include <functional>
+#include <cstdio>
 
 #ifndef AMD_PROJECT_SOURCE_DIR
 #define AMD_PROJECT_SOURCE_DIR ""
 #endif
+
+static void qtMessageFilter(QtMsgType type, const QMessageLogContext &, const QString &msg) {
+    if (msg.contains("QSocketNotifier: Can only be used with threads started with QThread"))
+        return;
+    if (msg.contains("Wayland does not support QWindow::requestActivate()"))
+        return;
+
+    const QByteArray local = msg.toLocal8Bit();
+    const char *prefix = "";
+    switch (type) {
+        case QtDebugMsg: prefix = "Debug: "; break;
+        case QtInfoMsg: prefix = "Info: "; break;
+        case QtWarningMsg: prefix = "Warning: "; break;
+        case QtCriticalMsg: prefix = "Critical: "; break;
+        case QtFatalMsg: prefix = "Fatal: "; break;
+    }
+    std::fprintf(stderr, "%s%s\n", prefix, local.constData());
+}
 
 // ---------------------------------------------------------------------------
 // AMD_GUI – main application window
@@ -520,6 +541,14 @@ private:
             backendProcess->setProgram(detectPythonExecutable(root, backendArgs));
             backendProcess->setArguments(backendArgs);
             backendProcess->setWorkingDirectory(root);
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            const QString filterRules =
+                "qt.qpa.wayland.warning=false\n"
+                "qt.core.qsocketnotifier.warning=false";
+            const QString existing = env.value("QT_LOGGING_RULES");
+            env.insert("QT_LOGGING_RULES",
+                       existing.isEmpty() ? filterRules : (existing + "\n" + filterRules));
+            backendProcess->setProcessEnvironment(env);
             backendProcess->start();
             backendStartedByGui = true;
         }
@@ -555,8 +584,18 @@ private:
             if (reply->error() == QNetworkReply::NoError) {
                 const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
                 const QString model   = obj.value("model_name").toString("Unknown");
-                backendStatusLabel->setText("Online  |  " + model);
-                backendStatusLabel->setStyleSheet("color: #2ecc71; font-weight: 600;");
+                const bool backupActive = obj.value("backup_active").toBool(false);
+                const QString modelError = obj.value("model_error").toString();
+                if (backupActive && !modelError.isEmpty()) {
+                    backendStatusLabel->setText("Online  |  Model weights missing");
+                    backendStatusLabel->setToolTip(modelError);
+                    backendStatusLabel->setStyleSheet("color: #f39c12; font-weight: 600;");
+                    statusBar()->showMessage(modelError);
+                } else {
+                    backendStatusLabel->setText("Online  |  " + model);
+                    backendStatusLabel->setToolTip(QString());
+                    backendStatusLabel->setStyleSheet("color: #2ecc71; font-weight: 600;");
+                }
                 // Populate model list on first successful health check
                 if (modelSelectorCombo->count() == 0)
                     refreshModelList();
@@ -587,9 +626,14 @@ private:
             modelSelectorCombo->clear();
 
             int activeIndex = 0;
+            int skippedCount = 0;
             for (int i = 0; i < models.size(); ++i) {
                 const QJsonObject m = models[i].toObject();
                 if (!m.value("exists").toBool(true)) continue;
+                if (!m.value("loadable").toBool(true)) {
+                    ++skippedCount;
+                    continue;
+                }
                 const QString name = m.value("name").toString();
                 const QString path = m.value("path").toString();
                 modelSelectorCombo->addItem(name, path);
@@ -607,6 +651,10 @@ private:
             }
             modelSelectorCombo->setCurrentIndex(activeIndex);
             modelSelectorCombo->setEnabled(modelSelectorCombo->count() > 0);
+            if (modelSelectorCombo->count() == 0 && skippedCount > 0) {
+                modelSelectorCombo->addItem("Download model weights first", "");
+                modelSelectorCombo->setEnabled(false);
+            }
             modelComboUpdating = false;
         });
     }
@@ -634,10 +682,15 @@ private:
                 backendStatusLabel->setText("Online  |  " + name);
                 backendStatusLabel->setStyleSheet("color: #2ecc71; font-weight: 600;");
             } else {
+                QString detail;
+                const QJsonDocument errDoc = QJsonDocument::fromJson(body);
+                if (errDoc.isObject())
+                    detail = errDoc.object().value("error").toString();
+                if (detail.isEmpty())
+                    detail = reply->errorString();
                 statusBar()->showMessage("Model switch failed.");
                 QMessageBox::warning(this, "Model Switch Failed",
-                    "Could not switch to the selected model.\n"
-                    "Check that the backend is running and the checkpoint is valid.");
+                    QString("Could not switch to the selected model.\n\nDetails: ") + detail);
             }
             modelSelectorCombo->setEnabled(true);
             refreshModelList();  // Refresh to update active indicator
@@ -736,6 +789,8 @@ private:
         const QString prediction = obj.value("prediction").toString("Unknown");
         const double  confidence = obj.value("confidence").toDouble(0.0);
         const QString modelName  = obj.value("model_name").toString("Unknown");
+        const bool backupActive = obj.value("backup_active").toBool(false);
+        const QString modelError = obj.value("model_error").toString();
 
         // ── Prediction badge ──────────────────────────────────────────────
         predictionBadge->setText(prediction);
@@ -788,7 +843,10 @@ private:
             const QJsonValue v = obj.value(key);
             return v.isDouble() ? QString::number(v.toDouble() * 100.0, 'f', 1) + "%" : "N/A";
         };
-        modelInfoLabel->setText(modelName);
+        modelInfoLabel->setText(
+            backupActive ? QString("Backup mode - model weights missing") : modelName
+        );
+        modelInfoLabel->setToolTip(modelError);
         accuracyLabel ->setText(fmt("accuracy"));
         sensitivityLabel->setText(fmt("sensitivity"));
         specificityLabel->setText(fmt("specificity"));
@@ -1736,6 +1794,7 @@ private:
 };
 
 int main(int argc, char *argv[]) {
+    qInstallMessageHandler(qtMessageFilter);
     QApplication app(argc, argv);
     AMD_GUI window;
     window.show();

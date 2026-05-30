@@ -39,7 +39,8 @@ Priority order:
 1. Use MODEL_PATH environment variable if provided.
 2. Else use the bundled checkpoint at backend/models/ViT_base/best_vit_model.pth.
 3. If the model file is a wrapped checkpoint, the loader will extract the first supported state_dict key.
-4. If model loading fails or file is missing, use backup heuristic inference.
+4. If the model file is a Git LFS pointer, the backend will attempt `git lfs pull` once (disable with `AMD_AUTO_PULL_LFS=0`).
+5. If model loading fails or file is missing, use backup heuristic inference.
 
 Response field model_type tells which one is active:
 - real
@@ -167,6 +168,11 @@ Option 2:
 - Set environment variable MODEL_PATH to your model location:
 
 MODEL_PATH=/absolute/path/to/model.pt python -m backend
+
+Option 3 (multiple models / ensembling):
+- Place another checkpoint at backend/models/ViT_base/best_vit_model_2.pth, or set
+- MODEL_PATH_2=/absolute/path/to/second_model.pt
+- MODEL_PATHS=/path/to/model_a.pt,/path/to/model_b.pt
 
 ## Train and Evaluate an Improved Model
 

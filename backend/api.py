@@ -93,6 +93,8 @@ def health():
             "model_paths": status["model_paths"],
             "model_names": status["model_names"],
             "models_loaded": status["models_loaded"],
+            "model_error": status["model_error"],
+            "model_load_issues": status["model_load_issues"],
             "metrics": status["metrics"],
         }
     )
@@ -196,6 +198,8 @@ def predict():
                 "model_paths": model_status["model_paths"],
                 "model_names": model_status["model_names"],
                 "models_loaded": model_status["models_loaded"],
+                "model_error": model_status["model_error"],
+                "model_load_issues": model_status["model_load_issues"],
                 "patient_name": patient_name,
                 "patient_age": patient_age,
                 "patient_id": patient_id,
