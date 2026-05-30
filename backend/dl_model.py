@@ -30,6 +30,14 @@ except Exception:
     timm = None  # type: ignore
     _HAS_TIMM = False
 
+try:
+    import torchvision  # type: ignore
+    from torchvision import models as tv_models  # type: ignore
+    _HAS_TORCHVISION = True
+except Exception:
+    tv_models = None  # type: ignore
+    _HAS_TORCHVISION = False
+
 CLASS_NAMES = ["Normal", "AMD"]
 IMAGE_SIZE = (224, 224)
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -101,6 +109,36 @@ if _HAS_TORCH and _HAS_TIMM:
 else:
     ViTBinaryClassifier = None  # type: ignore
     ViTMultiClassClassifier = None  # type: ignore
+
+
+if _HAS_TORCH and _HAS_TORCHVISION:
+    class ResNetBinaryClassifier(nn.Module):
+        def __init__(self):
+            super().__init__()
+            try:
+                backbone = tv_models.resnet50(weights=None)
+            except TypeError:  # Older torchvision
+                backbone = tv_models.resnet50(pretrained=False)
+            backbone.fc = nn.Identity()
+            self.backbone = backbone
+            # Matches best_resnet_model.pth head. Dropout/activation layers are
+            # inference-neutral (disabled in eval), but preserve module indices.
+            self.head = nn.Sequential(
+                nn.Dropout(0.3),
+                nn.Linear(2048, 512),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.3),
+                nn.Linear(512, 128),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.2),
+                nn.Linear(128, 1),
+            )
+
+        def forward(self, x):
+            features = self.backbone(x)
+            return self.head(features)
+else:
+    ResNetBinaryClassifier = None  # type: ignore
 
 
 def candidate_model_paths() -> list[Path]:
@@ -340,6 +378,12 @@ def _build_timm_model(arch: str):
     return timm.create_model(arch, pretrained=False, num_classes=2).to(DEVICE).eval()
 
 
+def _build_resnet_model():
+    if ResNetBinaryClassifier is None:
+        raise RuntimeError("Torchvision not available; cannot build ResNet model.")
+    return ResNetBinaryClassifier().to(DEVICE).eval()
+
+
 def _build_legacy_model():
     return ViTBinaryClassifier().to(DEVICE).eval()
 
@@ -360,6 +404,19 @@ def _looks_like_multiclass(state_dict: dict) -> bool:
     return False
 
 
+def _looks_like_resnet_backbone(state_dict: dict) -> bool:
+    if not state_dict:
+        return False
+    has_backbone = any(
+        key.startswith("backbone.conv1")
+        or key.startswith("backbone.layer1.")
+        or key.startswith("backbone.layer4.")
+        for key in state_dict.keys()
+    )
+    has_head = any(key.startswith("head.") for key in state_dict.keys())
+    return has_backbone and has_head
+
+
 def _try_load_model(model, state_dict: dict, strict: bool = True):
     try:
         model.load_state_dict(state_dict, strict=strict)
@@ -377,6 +434,13 @@ def _load_real_model(model_path: Path):
     model_name = _extract_model_name(model_path, checkpoint)
     metrics = _extract_metrics(checkpoint)
     checkpoint_arch = _extract_checkpoint_arch(checkpoint)
+
+    if _looks_like_resnet_backbone(state_dict):
+        try:
+            model = _try_load_model(_build_resnet_model(), state_dict, strict=True)
+            return model, model_name, metrics
+        except Exception as exc:
+            print(f"Could not load {model_path} as ResNet model: {exc}")
 
     if checkpoint_arch and _HAS_TIMM:
         try:

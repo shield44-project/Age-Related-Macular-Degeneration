@@ -174,6 +174,10 @@ Option 3 (multiple models / ensembling):
 - MODEL_PATH_2=/absolute/path/to/second_model.pt
 - MODEL_PATHS=/path/to/model_a.pt,/path/to/model_b.pt
 
+Option 4 (CNN / ResNet):
+- Drop a ResNet-style checkpoint at backend/models/CNN/best_resnet_model.pth
+  (auto-detected by the loader).
+
 ## Train and Evaluate an Improved Model
 
 Use the provided script to train on one or more datasets and test the resulting checkpoint.

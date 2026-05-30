@@ -115,6 +115,8 @@ public:
 
     // ── Model selector ───────────────────────────────────────────────────────
     QComboBox    *modelSelectorCombo;
+    QToolButton  *modelPrevBtn;
+    QToolButton  *modelNextBtn;
 
     // ── State ────────────────────────────────────────────────────────────────
     bool                  isDarkMode;
@@ -124,6 +126,7 @@ public:
     bool                  backendStartedByGui;
     bool                  modelComboUpdating = false;
     QList<QJsonObject>    allPatients;   // local cache for search filtering
+    QString               lastImagePath;
 
     // ────────────────────────────────────────────────────────────────────────
     AMD_GUI() {
@@ -232,11 +235,36 @@ private:
         modelHdr->setObjectName("sectionHeader");
         sideLayout->addWidget(modelHdr);
 
+        auto *modelRow = new QHBoxLayout();
+        modelRow->setContentsMargins(0, 0, 0, 0);
+        modelRow->setSpacing(6);
+
         modelSelectorCombo = new QComboBox();
         modelSelectorCombo->setObjectName("sidebarCombo");
         modelSelectorCombo->setToolTip("Select which model checkpoint to use for inference");
         modelSelectorCombo->setEnabled(false);
-        sideLayout->addWidget(modelSelectorCombo);
+        modelRow->addWidget(modelSelectorCombo, 1);
+
+        auto *modelNav = new QVBoxLayout();
+        modelNav->setContentsMargins(0, 0, 0, 0);
+        modelNav->setSpacing(4);
+
+        modelPrevBtn = new QToolButton();
+        modelPrevBtn->setObjectName("modelNavBtn");
+        modelPrevBtn->setArrowType(Qt::UpArrow);
+        modelPrevBtn->setToolTip("Previous model");
+        modelPrevBtn->setEnabled(false);
+        modelNav->addWidget(modelPrevBtn);
+
+        modelNextBtn = new QToolButton();
+        modelNextBtn->setObjectName("modelNavBtn");
+        modelNextBtn->setArrowType(Qt::DownArrow);
+        modelNextBtn->setToolTip("Next model");
+        modelNextBtn->setEnabled(false);
+        modelNav->addWidget(modelNextBtn);
+
+        modelRow->addLayout(modelNav);
+        sideLayout->addLayout(modelRow);
 
         sideLayout->addStretch();
 
@@ -500,18 +528,19 @@ private:
         connect(modelSelectorCombo,
                 QOverload<int>::of(&QComboBox::activated),
                 this, &AMD_GUI::onModelSelected);
+        connect(modelPrevBtn, &QToolButton::clicked, this, [this]() {
+            stepModelSelection(-1);
+        });
+        connect(modelNextBtn, &QToolButton::clicked, this, [this]() {
+            stepModelSelection(1);
+        });
     }
 
     // ── Slots / helpers ──────────────────────────────────────────────────────
 
-    void uploadImage() {
-        const QString fileName = QFileDialog::getOpenFileName(
-            this, "Select Fundus Image", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
-        );
-        if (fileName.isEmpty()) return;
-
-        fundusLabel->setPixmap(QPixmap(fileName));
+    void prepareForAnalysis(const QString &fileName, const QString &statusText) {
+        if (!fileName.isEmpty() && QFile::exists(fileName))
+            fundusLabel->setPixmap(QPixmap(fileName));
         camsLabel->setText("Processing…");
         predictionBadge->setText("Analysing…");
         predictionBadge->setStyleSheet("");
@@ -519,7 +548,50 @@ private:
         riskLabel->setStyleSheet("");
         confidenceBar->setValue(0);
         confidenceValueLabel->setText("—");
-        statusBar()->showMessage("Analysing: " + QFileInfo(fileName).fileName());
+        statusBar()->showMessage(statusText);
+    }
+
+    void reanalyzeLastImage() {
+        if (lastImagePath.isEmpty())
+            return;
+        if (!QFile::exists(lastImagePath)) {
+            statusBar()->showMessage("Previous image file no longer exists.");
+            return;
+        }
+        prepareForAnalysis(
+            lastImagePath,
+            "Re-analysing with selected model…"
+        );
+        ensureBackendAndPredict(lastImagePath);
+    }
+
+    void updateModelNavButtons() {
+        const int count = modelSelectorCombo->count();
+        const int idx = modelSelectorCombo->currentIndex();
+        const bool enabled = modelSelectorCombo->isEnabled() && count > 0;
+        modelPrevBtn->setEnabled(enabled && idx > 0);
+        modelNextBtn->setEnabled(enabled && idx < count - 1);
+    }
+
+    void stepModelSelection(int delta) {
+        if (modelComboUpdating) return;
+        const int count = modelSelectorCombo->count();
+        if (count <= 0) return;
+        const int current = modelSelectorCombo->currentIndex();
+        const int next = current + delta;
+        if (next < 0 || next >= count) return;
+        modelSelectorCombo->setCurrentIndex(next);
+        onModelSelected(next);
+    }
+
+    void uploadImage() {
+        const QString fileName = QFileDialog::getOpenFileName(
+            this, "Select Fundus Image", "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
+        );
+        if (fileName.isEmpty()) return;
+        lastImagePath = fileName;
+        prepareForAnalysis(fileName, "Analysing: " + QFileInfo(fileName).fileName());
         ensureBackendAndPredict(fileName);
     }
 
@@ -656,6 +728,7 @@ private:
                 modelSelectorCombo->setEnabled(false);
             }
             modelComboUpdating = false;
+            updateModelNavButtons();
         });
     }
 
@@ -665,6 +738,7 @@ private:
         if (path.isEmpty()) return;
 
         modelSelectorCombo->setEnabled(false);
+        updateModelNavButtons();
         statusBar()->showMessage("Switching model…");
 
         QNetworkRequest req(QUrl("http://127.0.0.1:5000/models/active"));
@@ -681,6 +755,7 @@ private:
                 statusBar()->showMessage("Model switched to: " + name);
                 backendStatusLabel->setText("Online  |  " + name);
                 backendStatusLabel->setStyleSheet("color: #2ecc71; font-weight: 600;");
+                reanalyzeLastImage();
             } else {
                 QString detail;
                 const QJsonDocument errDoc = QJsonDocument::fromJson(body);
@@ -693,11 +768,13 @@ private:
                     QString("Could not switch to the selected model.\n\nDetails: ") + detail);
             }
             modelSelectorCombo->setEnabled(true);
+            updateModelNavButtons();
             refreshModelList();  // Refresh to update active indicator
         });
     }
 
     void requestPrediction(const QString &fileName) {
+        lastImagePath = fileName;
         QFile *file = new QFile(fileName);
         if (!file->open(QIODevice::ReadOnly)) {
             statusBar()->showMessage("Error: could not open image file.");
@@ -1037,6 +1114,7 @@ private:
 
         if (!imgPath.isEmpty() && QFile::exists(imgPath)) {
             fundusLabel->setPixmap(QPixmap(imgPath));
+            lastImagePath = imgPath;
             statusBar()->showMessage(
                 "Loaded historical image for: " + patientTable->item(row, 1)->text()
             );
@@ -1102,6 +1180,7 @@ private:
 
         if (chosen == aLoad && !imgPath.isEmpty() && QFile::exists(imgPath)) {
             fundusLabel->setPixmap(QPixmap(imgPath));
+            lastImagePath = imgPath;
             tabWidget->setCurrentIndex(0);
             statusBar()->showMessage("Loaded historical image for: " + patientTable->item(row, 1)->text());
         } else if (chosen == aOpen && !imgPath.isEmpty() && QFile::exists(imgPath)) {
@@ -1255,10 +1334,26 @@ private:
                 border: 1px solid #e3e6eb;
                 border-radius: 6px;
                 padding: 7px 10px;
+                padding-right: 34px;
+                min-height: 34px;
             }
             QComboBox#sidebarCombo:focus { border: 1px solid #1a1f2b; }
             QComboBox#sidebarCombo:disabled { color: #9ca3af; }
-            QComboBox#sidebarCombo::drop-down { border: none; width: 18px; }
+            QComboBox#sidebarCombo::drop-down { border: none; width: 28px; }
+            QComboBox#sidebarCombo::down-arrow { width: 10px; height: 10px; }
+            QToolButton#modelNavBtn {
+                background-color: #f5f6f8;
+                color: #1a1f2b;
+                border: 1px solid #e3e6eb;
+                border-radius: 6px;
+                min-width: 28px;
+                min-height: 16px;
+            }
+            QToolButton#modelNavBtn:hover { background-color: #e9ecf2; }
+            QToolButton#modelNavBtn:disabled {
+                color: #9ca3af;
+                background-color: #f0f1f4;
+            }
             QComboBox#sidebarCombo QAbstractItemView {
                 background-color: #ffffff;
                 color: #1a1f2b;
@@ -1514,10 +1609,26 @@ private:
                 border: 1px solid #1a1a1a;
                 border-radius: 6px;
                 padding: 7px 10px;
+                padding-right: 34px;
+                min-height: 34px;
             }
             QComboBox#sidebarCombo:focus { border: 1px solid #ffffff; }
             QComboBox#sidebarCombo:disabled { color: #4b5563; }
-            QComboBox#sidebarCombo::drop-down { border: none; width: 18px; }
+            QComboBox#sidebarCombo::drop-down { border: none; width: 28px; }
+            QComboBox#sidebarCombo::down-arrow { width: 10px; height: 10px; }
+            QToolButton#modelNavBtn {
+                background-color: #0a0a0a;
+                color: #e5e7eb;
+                border: 1px solid #1a1a1a;
+                border-radius: 6px;
+                min-width: 28px;
+                min-height: 16px;
+            }
+            QToolButton#modelNavBtn:hover { background-color: #111827; }
+            QToolButton#modelNavBtn:disabled {
+                color: #4b5563;
+                background-color: #0f1115;
+            }
             QComboBox#sidebarCombo QAbstractItemView {
                 background-color: #0a0a0a;
                 color: #e5e7eb;
