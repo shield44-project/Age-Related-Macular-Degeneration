@@ -1047,6 +1047,16 @@ def _find_last_conv_layer(model):
     return None
 
 
+def _gradcam_target_layer(model):
+    """Return the layer that should receive Grad-CAM hooks."""
+    if _is_vit_model(model):
+        try:
+            return _get_vit_backbone(model).patch_embed.proj
+        except Exception:
+            return None
+    return _find_last_conv_layer(model)
+
+
 def _is_cnn_model(model) -> bool:
     if not _HAS_TORCH:
         return False
@@ -1148,6 +1158,60 @@ def _gradcam_on_conv(model, tensor, target_idx: int):
     return cam[0, 0].detach().cpu().numpy()
 
 
+def _gradcam_plus_plus(model, tensor, target_idx: int):
+    """Compute Grad-CAM++ for CNN and ViT backbones."""
+    if not _HAS_TORCH:
+        raise RuntimeError("PyTorch required for Grad-CAM++")
+
+    target_layer = _gradcam_target_layer(model)
+    if target_layer is None:
+        raise RuntimeError("No suitable layer found for Grad-CAM++")
+
+    activations: dict = {}
+    grads: dict = {}
+
+    def forward_hook(_, __, out):
+        activations["value"] = out.detach()
+
+    def backward_hook(_, __, grad_out):
+        grads["value"] = grad_out[0].detach()
+
+    h_fwd = target_layer.register_forward_hook(forward_hook)
+    h_bwd = target_layer.register_full_backward_hook(backward_hook)
+
+    try:
+        model.eval()
+        tensor_req = tensor.clone().detach().requires_grad_(True)
+        output = model(tensor_req)
+        score = _select_target_score(output, target_idx)
+        model.zero_grad(set_to_none=True)
+        score.backward(retain_graph=False)
+    finally:
+        h_fwd.remove()
+        h_bwd.remove()
+
+    if "value" not in activations or "value" not in grads:
+        raise RuntimeError("Failed to capture activations/gradients for Grad-CAM++")
+
+    act = activations["value"]
+    grad = grads["value"]
+    if act.ndim != 4 or grad.ndim != 4:
+        raise RuntimeError("Grad-CAM++ expects a 4D feature map")
+
+    grads2 = grad ** 2
+    grads3 = grad ** 3
+    denom = 2 * grads2 + (act * grads3).sum(dim=(2, 3), keepdim=True) + 1e-8
+    alpha = grads2 / denom
+    weights = (alpha * torch.relu(grad)).sum(dim=(2, 3), keepdim=True)
+    cam = torch.relu((weights * act).sum(dim=1, keepdim=True))
+    cam = cam - cam.min()
+    cam = cam / (cam.max() + 1e-8)
+    cam = torch.nn.functional.interpolate(
+        cam, size=IMAGE_SIZE, mode="bilinear", align_corners=False
+    )
+    return cam[0, 0].detach().cpu().numpy()
+
+
 def _select_explainability_model_indices() -> tuple[int | None, int | None]:
     if not MODELS:
         return None, None
@@ -1167,89 +1231,47 @@ def generate_explainability_cams(
     output_prefix: Path,
     model=None,
 ) -> dict:
-    """Generate and save both attention-rollout and Grad-CAM visualizations.
-
-    Returns a dict with keys: 'attention_path', 'gradcam_path', 'combined_path'
-    Paths may be empty strings if generation failed and a fallback was used instead.
-    """
+    """Generate the single Grad-CAM++ visualization used by the GUI."""
     _ensure_model_ready()
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
-    attention_path = output_prefix.with_name(output_prefix.stem + "_attention.png")
-    gradcam_path = output_prefix.with_name(output_prefix.stem + "_gradcam.png")
-    combined_path = output_prefix.with_name(output_prefix.stem + "_combined.png")
+    gradcampp_path = output_prefix.with_name(output_prefix.stem + "_gradcampp.png")
 
     active_model = model or (MODELS[0] if MODELS else None)
     if not is_real_model_loaded() or active_model is None:
         fallback = generate_explainability_cam(
             input_tensor, base_rgb, predicted_idx,
-            output_prefix.with_name(output_prefix.stem + "_cam.png"),
+            gradcampp_path,
             model=active_model,
         )
-        return {"attention_path": "", "gradcam_path": "", "combined_path": fallback}
+        return {
+            "attention_path": "",
+            "gradcam_path": fallback,
+            "gradcampp_path": fallback,
+            "combined_path": "",
+        }
 
-    attention_saved = ""
-    gradcam_saved = ""
-
-    # Attempt attention rollout (ViT only)
-    if _is_vit_model(active_model):
-        try:
-            tensor = _as_input_tensor(input_tensor, requires_grad=False)
-            heat_att = _postprocess_heatmap(
-                _attention_rollout_for_vit(active_model, tensor), base_rgb
-            )
-            Image.fromarray(_blend_heatmap(base_rgb, heat_att)).save(attention_path)
-            attention_saved = str(attention_path)
-        except Exception as exc:
-            print(f"[XAI] Attention rollout failed: {exc}")
-            attention_saved = ""
-
-    # Attempt Grad-CAM
     try:
         tensor_g = _as_input_tensor(input_tensor, requires_grad=True)
-        if _is_vit_model(active_model):
-            heat_gc = _gradcam_on_patch_embed(active_model, tensor_g, int(predicted_idx))
-        else:
-            heat_gc = _gradcam_on_conv(active_model, tensor_g, int(predicted_idx))
+        heat_gc = _gradcam_plus_plus(active_model, tensor_g, int(predicted_idx))
         heat_gc = _postprocess_heatmap(heat_gc, base_rgb)
-        Image.fromarray(_blend_heatmap(base_rgb, heat_gc)).save(gradcam_path)
-        gradcam_saved = str(gradcam_path)
+        Image.fromarray(_blend_heatmap(base_rgb, heat_gc)).save(gradcampp_path)
+        gradcam_saved = str(gradcampp_path)
     except Exception as exc:
-        print(f"[XAI] Grad-CAM failed: {exc}")
-        gradcam_saved = ""
+        print(f"[XAI] Grad-CAM++ failed: {exc}")
+        gradcam_saved = generate_explainability_cam(
+            input_tensor,
+            base_rgb,
+            predicted_idx,
+            gradcampp_path,
+            model=active_model,
+        )
 
-    # Create a simple combined image (side-by-side of available maps)
-    try:
-        parts = []
-        if attention_saved:
-            parts.append(Image.open(attention_saved).convert("RGB"))
-        if gradcam_saved:
-            parts.append(Image.open(gradcam_saved).convert("RGB"))
-        if not parts:
-            # Fallback to single saliency map using existing function
-            single = generate_explainability_cam(
-                input_tensor,
-                base_rgb,
-                predicted_idx,
-                output_prefix.with_name(output_prefix.stem + "_cam.png"),
-                model=active_model,
-            )
-            return {"attention_path": attention_saved, "gradcam_path": gradcam_saved, "combined_path": str(output_prefix.with_name(output_prefix.stem + "_cam.png"))}
-
-        # Resize parts to same height and concatenate horizontally
-        widths, heights = zip(*(p.size for p in parts))
-        total_width = sum(widths)
-        max_height = max(heights)
-        new_im = Image.new("RGB", (total_width, max_height))
-        x_offset = 0
-        for im in parts:
-            new_im.paste(im, (x_offset, 0))
-            x_offset += im.size[0]
-        new_im.save(combined_path)
-        combined_saved = str(combined_path)
-    except Exception:
-        combined_saved = ""
-
-    return {"attention_path": attention_saved, "gradcam_path": gradcam_saved, "combined_path": combined_saved}
+    return {
+        "attention_path": "",
+        "gradcam_path": gradcam_saved,
+        "gradcampp_path": gradcam_saved,
+        "combined_path": "",
+    }
 
 
 def generate_model_comparison_cams(
@@ -1257,7 +1279,7 @@ def generate_model_comparison_cams(
     base_rgb: np.ndarray,
     output_prefix: Path,
 ) -> dict:
-    """Generate explainability maps for the primary model and optional CNN comparator."""
+    """Generate explainability metadata for the primary model and optional CNN comparator."""
     _ensure_model_ready()
     if not is_real_model_loaded() or not MODELS:
         return {}
@@ -1284,8 +1306,8 @@ def generate_model_comparison_cams(
             "model_path": info.get("path", ""),
             "prediction": CLASS_NAMES[pred_idx],
             "confidence": float(probs[pred_idx]),
-            "attention_path": cams.get("attention_path", ""),
             "gradcam_path": cams.get("gradcam_path", ""),
+            "gradcampp_path": cams.get("gradcampp_path", cams.get("gradcam_path", "")),
             "combined_path": cams.get("combined_path", ""),
         }
 
@@ -1303,8 +1325,11 @@ def generate_explainability_cam(
     output_path: Path,
     model=None,
 ) -> str:
-    """Generate a saliency map (gradient-based when a real model is loaded,
-    intensity-based otherwise). Works with or without OpenCV installed."""
+    """Generate the primary explainability heatmap.
+
+    Uses Grad-CAM++ when a real model is loaded and a structure-based fallback
+    when the backend is running in heuristic mode.
+    """
     _ensure_model_ready()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1322,33 +1347,16 @@ def generate_explainability_cam(
         gray = _postprocess_heatmap(gray, base_rgb)
         Image.fromarray(_blend_heatmap(base_rgb, gray)).save(output_path)
         return str(output_path)
-    # Try Grad-CAM on patch embeddings first, fall back to attention rollout,
-    # then fall back to input-gradient saliency.
+    # Try Grad-CAM++ first, then fall back to input-gradient saliency.
     try:
-        # Attempt Grad-CAM on patch embedding (primary explainability method)
         try:
             tensor_g = _as_input_tensor(input_tensor, requires_grad=True)
-            if _is_vit_model(primary_model):
-                heat = _gradcam_on_patch_embed(primary_model, tensor_g, int(predicted_idx))
-            else:
-                heat = _gradcam_on_conv(primary_model, tensor_g, int(predicted_idx))
+            heat = _gradcam_plus_plus(primary_model, tensor_g, int(predicted_idx))
             heat = _postprocess_heatmap(heat, base_rgb)
             Image.fromarray(_blend_heatmap(base_rgb, heat)).save(output_path)
             return str(output_path)
         except Exception:
             pass
-
-        # Fall back to attention rollout
-        if _is_vit_model(primary_model):
-            try:
-                tensor = _as_input_tensor(input_tensor, requires_grad=False)
-                heat = _postprocess_heatmap(
-                    _attention_rollout_for_vit(primary_model, tensor), base_rgb
-                )
-                Image.fromarray(_blend_heatmap(base_rgb, heat)).save(output_path)
-                return str(output_path)
-            except Exception:
-                pass
 
         # Fallback: input-gradient saliency (existing behavior)
         tensor_in = _as_input_tensor(input_tensor, requires_grad=True)

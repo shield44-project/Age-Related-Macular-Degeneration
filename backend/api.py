@@ -9,8 +9,6 @@ if __package__:
     from .dl_model import (
         CLASS_NAMES,
         generate_explainability_cam,
-        generate_explainability_cams,
-        generate_model_comparison_cams,
         get_model_status,
         list_available_models,
         predict_probabilities,
@@ -29,8 +27,6 @@ else:
     from dl_model import (
         CLASS_NAMES,
         generate_explainability_cam,
-        generate_explainability_cams,
-        generate_model_comparison_cams,
         get_model_status,
         list_available_models,
         predict_probabilities,
@@ -169,17 +165,8 @@ def predict():
             input_tensor=input_tensor,
             base_rgb=cam_base_rgb,
             predicted_idx=pred_idx,
-            output_path=CAMS_DIR / f"{path_stem}_cam.png",
+            output_path=CAMS_DIR / f"{path_stem}_gradcampp.png",
         )
-
-        comparison = generate_model_comparison_cams(
-            input_tensor=input_tensor,
-            base_rgb=cam_base_rgb,
-            output_prefix=CAMS_DIR / f"{path_stem}",
-        )
-        classification_cam = comparison.get("classification", {})
-        cnn_cam = comparison.get("cnn", {})
-        combined_fallback = classification_cam.get("combined_path") or str(Path(cam_path).resolve())
 
         # Persist the scan to the patient database
         db_result = insert_patient_record(
@@ -208,23 +195,9 @@ def predict():
                 "patient_id": patient_id,
                 "image_path": str(Path(image_path).resolve()),
                 "cam_image_path": str(Path(cam_path).resolve()),
-                "cam_attention_path": classification_cam.get("attention_path", ""),
-                "cam_gradcam_path": classification_cam.get("gradcam_path", ""),
-                "cam_combined_path": combined_fallback,
-                "cam_classification_model_name": classification_cam.get("model_name", ""),
-                "cam_classification_model_path": classification_cam.get("model_path", ""),
-                "cam_classification_prediction": classification_cam.get("prediction", ""),
-                "cam_classification_confidence": classification_cam.get("confidence", 0.0),
-                "cam_classification_attention_path": classification_cam.get("attention_path", ""),
-                "cam_classification_gradcam_path": classification_cam.get("gradcam_path", ""),
-                "cam_classification_combined_path": classification_cam.get("combined_path", ""),
-                "cam_cnn_model_name": cnn_cam.get("model_name", ""),
-                "cam_cnn_model_path": cnn_cam.get("model_path", ""),
-                "cam_cnn_prediction": cnn_cam.get("prediction", ""),
-                "cam_cnn_confidence": cnn_cam.get("confidence", 0.0),
-                "cam_cnn_attention_path": cnn_cam.get("attention_path", ""),
-                "cam_cnn_gradcam_path": cnn_cam.get("gradcam_path", ""),
-                "cam_cnn_combined_path": cnn_cam.get("combined_path", ""),
+                "cam_gradcampp_path": str(Path(cam_path).resolve()),
+                "cam_gradcam_path": str(Path(cam_path).resolve()),
+                "cam_combined_path": "",
                 "eye_condition": prediction,
                 "diagnosis": prediction,
                 "prediction": prediction,
