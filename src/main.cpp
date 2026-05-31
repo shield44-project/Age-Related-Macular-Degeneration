@@ -308,7 +308,7 @@ private:
         };
 
         imgRow->addWidget(makeImgGroup("Fundus Image", fundusLabel));
-        imgRow->addWidget(makeImgGroup("Grad-CAM++", camsLabel));
+        imgRow->addWidget(makeImgGroup("Grad-CAM", camsLabel));
         imgRow->addStretch();
         analysisLayout->addLayout(imgRow);
 
