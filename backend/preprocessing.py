@@ -85,11 +85,13 @@ def decode_image_bytes(image_bytes: bytes) -> np.ndarray:
 
 
 def apply_clahe(bgr_img: np.ndarray) -> np.ndarray:
-    """BGR uint8 -> CLAHE grayscale stacked to 3-channel uint8."""
-    gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
+    """BGR uint8 -> LAB-space CLAHE that preserves colour."""
+    lab = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB)
+    l_chan, a_chan, b_chan = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    return np.stack([enhanced, enhanced, enhanced], axis=-1)
+    l_chan = clahe.apply(l_chan)
+    lab = cv2.merge([l_chan, a_chan, b_chan])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
 def center_crop(img: np.ndarray, crop_size: int) -> np.ndarray:
@@ -115,11 +117,9 @@ def center_crop(img: np.ndarray, crop_size: int) -> np.ndarray:
 def preprocess_bgr_image(bgr_img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Notebook-aligned preprocessing returning model tensor + display RGB image."""
     image = apply_clahe(bgr_img)
-    image = center_crop(image, IMAGE_SIZE[0])
-    image = cv2.resize(image, IMAGE_SIZE, interpolation=cv2.INTER_AREA)
-
     display_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
+    image = cv2.resize(image, IMAGE_SIZE, interpolation=cv2.INTER_AREA)
     image = image.astype(np.float32) / 255.0
     image = (image - IMAGENET_MEAN) / IMAGENET_STD
     image = np.transpose(image, (2, 0, 1))

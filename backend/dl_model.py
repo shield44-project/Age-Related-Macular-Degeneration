@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 try:
     import cv2  # type: ignore
@@ -45,6 +45,7 @@ PROJECT_ROOT = PACKAGE_DIR.parent
 DEFAULT_MODEL_PATH = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model.pth"
 DEFAULT_MODEL_PATH_IMPROVED = PACKAGE_DIR / "models" / "ViT_base" / "best_vit_model_improved.pth"
 DEFAULT_DEIT_MODEL_PATH = PACKAGE_DIR / "models" / "DeiT-S" / "best_deit_model.pth"
+DEFAULT_CNN_MODEL_PATH = PACKAGE_DIR / "models" / "CNN" / "best_resnet_model.pth"
 DEVICE = torch.device("cuda" if (_HAS_TORCH and torch.cuda.is_available()) else "cpu") if _HAS_TORCH else None
 MAX_MODELS = 2
 BACKUP_MODEL_TYPE = "backup"
@@ -224,6 +225,7 @@ def candidate_model_paths() -> list[Path]:
                 collect_from_configured_path(entry)
 
     add_if_present(DEFAULT_DEIT_MODEL_PATH)
+    add_if_present(DEFAULT_CNN_MODEL_PATH)
     add_if_present(DEFAULT_MODEL_PATH_IMPROVED)
     add_if_present(DEFAULT_MODEL_PATH)
 
@@ -253,11 +255,13 @@ def candidate_model_paths() -> list[Path]:
             resolved = p
         if resolved == DEFAULT_DEIT_MODEL_PATH.resolve():
             return 0
-        if resolved == DEFAULT_MODEL_PATH.resolve():
+        if resolved == DEFAULT_CNN_MODEL_PATH.resolve():
             return 1
         if resolved == DEFAULT_MODEL_PATH_IMPROVED.resolve():
             return 2
-        return 3
+        if resolved == DEFAULT_MODEL_PATH.resolve():
+            return 3
+        return 4
 
     candidates.sort(
         key=lambda p: (
@@ -703,6 +707,35 @@ def _backup_predict_prob_amd(input_tensor: np.ndarray) -> float:
     return float(np.clip(score, 0.05, 0.95))
 
 
+def _model_prob_amd_from_output(output) -> float:
+    if output.ndim == 2 and output.shape[-1] == 2:
+        prob_amd = float(torch.softmax(output, dim=1)[0, 1].item())
+    elif output.ndim == 2 and output.shape[-1] == 1:
+        val = float(output.view(-1)[0].item())
+        prob_amd = val if 0.0 <= val <= 1.0 else float(1.0 / (1.0 + np.exp(-val)))
+    else:
+        val = float(output.view(-1)[0].item())
+        prob_amd = val if 0.0 <= val <= 1.0 else float(1.0 / (1.0 + np.exp(-val)))
+    return float(np.clip(prob_amd, 0.0, 1.0))
+
+
+def _predict_model_probabilities(model, input_tensor: np.ndarray) -> np.ndarray:
+    if not _HAS_TORCH:
+        raise RuntimeError("PyTorch required for model prediction")
+    with torch.no_grad():
+        tensor = _as_input_tensor(input_tensor)
+        output = model(tensor)
+        prob_amd = _model_prob_amd_from_output(output)
+    return np.array([1.0 - prob_amd, prob_amd], dtype=np.float32)
+
+
+def _select_prediction_models() -> list:
+    if not MODELS:
+        return []
+    vit_models = [model for model in MODELS if _is_vit_model(model)]
+    return vit_models if vit_models else MODELS
+
+
 def predict_probabilities(input_tensor: np.ndarray) -> np.ndarray:
     _ensure_model_ready()
     if not is_real_model_loaded():
@@ -712,17 +745,9 @@ def predict_probabilities(input_tensor: np.ndarray) -> np.ndarray:
     with torch.no_grad():
         tensor = _as_input_tensor(input_tensor)
         per_model_probs: list = []
-        for model in MODELS:
+        for model in _select_prediction_models():
             out = model(tensor)
-            if out.ndim == 2 and out.shape[-1] == 2:
-                prob_amd = float(torch.softmax(out, dim=1)[0, 1].item())
-            elif out.ndim == 2 and out.shape[-1] == 1:
-                # Sigmoid binary head: a single logit/probability per sample.
-                val = float(out.view(-1)[0].item())
-                prob_amd = val if 0.0 <= val <= 1.0 else float(1.0 / (1.0 + np.exp(-val)))
-            else:
-                val = float(out.view(-1)[0].item())
-                prob_amd = val if 0.0 <= val <= 1.0 else float(1.0 / (1.0 + np.exp(-val)))
+            prob_amd = _model_prob_amd_from_output(out)
             per_model_probs.append(prob_amd)
         # Median ensemble is more robust to a single misbehaving checkpoint
         # than a plain mean when only a couple of models are loaded.
@@ -755,6 +780,125 @@ def _resize_rgb(arr: np.ndarray, size) -> np.ndarray:
     if _HAS_CV2:
         return cv2.resize(arr, (size[1], size[0]), interpolation=cv2.INTER_AREA)
     return _pil_resize_rgb(arr, size)
+
+
+def _resize_gray(arr: np.ndarray, size) -> np.ndarray:
+    if arr.shape[:2] == size:
+        return arr.astype(np.float32)
+    arr_f = arr.astype(np.float32)
+    is_unit = float(arr_f.max()) <= 1.0 if arr_f.size else True
+    if is_unit:
+        arr_f = (arr_f * 255.0).clip(0.0, 255.0)
+    if _HAS_CV2:
+        resized = cv2.resize(arr_f, (size[1], size[0]), interpolation=cv2.INTER_AREA)
+    else:
+        img = Image.fromarray(arr_f.astype(np.uint8))
+        img = img.resize((size[1], size[0]), Image.Resampling.LANCZOS)
+        resized = np.asarray(img, dtype=np.float32)
+    if is_unit:
+        resized = resized / 255.0
+    return resized.astype(np.float32)
+
+
+def _normalize_heatmap(heat: np.ndarray) -> np.ndarray:
+    heat = np.nan_to_num(heat, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    if heat.ndim > 2:
+        heat = np.squeeze(heat)
+    heat_min = float(heat.min()) if heat.size else 0.0
+    heat_max = float(heat.max()) if heat.size else 0.0
+    denom = heat_max - heat_min
+    if denom <= 1e-8:
+        return np.zeros_like(heat, dtype=np.float32)
+    heat = (heat - heat_min) / denom
+    lo = float(np.percentile(heat, 10.0))
+    hi = float(np.percentile(heat, 97.0))
+    if hi - lo > 1e-6:
+        heat = np.clip((heat - lo) / (hi - lo), 0.0, 1.0)
+    heat = np.clip(heat, 0.0, 1.0)
+    return heat ** 0.7
+
+
+def _retina_mask(base_rgb: np.ndarray) -> np.ndarray:
+    base = base_rgb.astype(np.float32)
+    if base.ndim != 3 or base.shape[2] != 3:
+        return np.ones(base.shape[:2], dtype=np.float32)
+    luma = 0.299 * base[..., 0] + 0.587 * base[..., 1] + 0.114 * base[..., 2]
+    thresh = max(10.0, float(np.percentile(luma, 12.0)))
+    mask = (luma >= thresh).astype(np.float32)
+    if _HAS_CV2:
+        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=3, sigmaY=3)
+        denom = float(mask.max()) if mask.size else 0.0
+        if denom > 1e-6:
+            mask = mask / denom
+    return mask
+
+
+def _postprocess_heatmap(heat: np.ndarray, base_rgb: np.ndarray) -> np.ndarray:
+    heat = _normalize_heatmap(heat)
+    mask = _retina_mask(base_rgb)
+    if mask.shape != heat.shape:
+        mask = _resize_gray(mask, heat.shape)
+    if float(mask.mean()) > 0.01:
+        heat = _normalize_heatmap(heat * mask)
+    if heat.size:
+        if _HAS_CV2:
+            heat = cv2.GaussianBlur(heat, (0, 0), sigmaX=2.0, sigmaY=2.0)
+        else:
+            img = Image.fromarray((heat * 255.0).astype(np.uint8))
+            img = img.filter(ImageFilter.GaussianBlur(radius=2))
+            heat = np.asarray(img, dtype=np.float32) / 255.0
+    return heat
+
+
+def _zoom_heat_region(heat: np.ndarray) -> tuple[int, int, int, int]:
+    h, w = heat.shape
+    if h == 0 or w == 0:
+        return 0, h, 0, w
+    thresh = float(np.percentile(heat, 90.0))
+    ys, xs = np.where(heat >= thresh)
+    if ys.size < 10:
+        cy, cx = h // 2, w // 2
+        box = int(min(h, w) * 0.6)
+        half = box // 2
+        y0 = max(0, cy - half)
+        x0 = max(0, cx - half)
+        y1 = min(h, y0 + box)
+        x1 = min(w, x0 + box)
+        return y0, y1, x0, x1
+    y0, y1 = int(ys.min()), int(ys.max())
+    x0, x1 = int(xs.min()), int(xs.max())
+    box = max(y1 - y0 + 1, x1 - x0 + 1)
+    box = max(box, int(min(h, w) * 0.6))
+    cy = (y0 + y1) // 2
+    cx = (x0 + x1) // 2
+    half = box // 2
+    y0 = max(0, cy - half)
+    x0 = max(0, cx - half)
+    y1 = min(h, y0 + box)
+    x1 = min(w, x0 + box)
+    if y1 - y0 < box:
+        y0 = max(0, y1 - box)
+    if x1 - x0 < box:
+        x0 = max(0, x1 - box)
+    return y0, y1, x0, x1
+
+
+def _blend_heatmap(base_rgb: np.ndarray, heat: np.ndarray, zoom: bool = False) -> np.ndarray:
+    base = base_rgb.astype(np.float32)
+    heat = _normalize_heatmap(heat)
+    if heat.shape != base.shape[:2]:
+        heat = _resize_gray(heat, base.shape[:2])
+    if zoom and heat.size:
+        y0, y1, x0, x1 = _zoom_heat_region(heat)
+        base_crop = base[y0:y1, x0:x1]
+        heat_crop = heat[y0:y1, x0:x1]
+        if base_crop.size and heat_crop.size:
+            base = _resize_rgb(base_crop.astype(np.uint8), base.shape[:2]).astype(np.float32)
+            heat = _resize_gray(heat_crop, base.shape[:2])
+    heat_rgb = _jet_colormap(heat)
+    alpha = 0.25 + 0.55 * heat[..., None]
+    blended = base * (1.0 - alpha) + heat_rgb * alpha
+    return blended.clip(0, 255).astype(np.uint8)
 
 
 def _get_vit_backbone(model):
@@ -795,15 +939,22 @@ def _attention_rollout_for_vit(model, tensor, discard_ratio: float = 0.9):
         x = backbone.patch_embed(tensor)
         B = x.shape[0]
         cls_tokens = backbone.cls_token.expand(B, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)  # (B, N+1, C)
+        dist_token = getattr(backbone, "dist_token", None)
+        if dist_token is not None:
+            dist_tokens = dist_token.expand(B, -1, -1)
+            x = torch.cat((cls_tokens, dist_tokens, x), dim=1)  # (B, N+2, C)
+            num_extra_tokens = 2
+        else:
+            x = torch.cat((cls_tokens, x), dim=1)  # (B, N+1, C)
+            num_extra_tokens = 1
 
         if hasattr(backbone, "pos_embed") and backbone.pos_embed is not None:
             pe = backbone.pos_embed
             if pe.shape[1] == x.shape[1]:
                 x = x + pe
-            elif pe.shape[1] == x.shape[1] - 1:
+            elif pe.shape[1] == x.shape[1] - num_extra_tokens:
                 # no_embed_class variant: positional embeddings cover patches only
-                x = torch.cat([x[:, :1], x[:, 1:] + pe], dim=1)
+                x = torch.cat([x[:, :num_extra_tokens], x[:, num_extra_tokens:] + pe], dim=1)
             # else: skip — best-effort, model may use dynamic resizing
 
         attentions = []
@@ -844,7 +995,10 @@ def _attention_rollout_for_vit(model, tensor, discard_ratio: float = 0.9):
         att_mat = a @ att_mat
 
     # CLS token's attention to every patch
-    cls_attn = att_mat[0, 1:]
+    if num_extra_tokens == 2:
+        cls_attn = 0.5 * (att_mat[0, 2:] + att_mat[1, 2:])
+    else:
+        cls_attn = att_mat[0, 1:]
     patch_count = cls_attn.shape[0]
     if patch_count == 0:
         raise RuntimeError("Attention rollout produced zero patches; cannot generate heatmap.")
@@ -873,6 +1027,17 @@ def _is_vit_model(model) -> bool:
         return False
 
 
+def _select_target_score(output, target_idx: int):
+    if not _HAS_TORCH:
+        raise RuntimeError("PyTorch required for target score selection")
+    if output.ndim == 2 and output.shape[-1] == 2:
+        return torch.softmax(output, dim=1)[0, int(target_idx)]
+    output = output.view(-1)
+    logit = output[0]
+    prob = torch.sigmoid(logit)
+    return prob if int(target_idx) == 1 else (1.0 - prob)
+
+
 def _find_last_conv_layer(model):
     if not _HAS_TORCH:
         return None
@@ -880,6 +1045,14 @@ def _find_last_conv_layer(model):
         if isinstance(module, nn.Conv2d):
             return module
     return None
+
+
+def _is_cnn_model(model) -> bool:
+    if not _HAS_TORCH:
+        return False
+    if _is_vit_model(model):
+        return False
+    return _find_last_conv_layer(model) is not None
 
 
 def _gradcam_on_patch_embed(model, tensor, target_idx: int):
@@ -912,11 +1085,7 @@ def _gradcam_on_patch_embed(model, tensor, target_idx: int):
 
     tensor_req = tensor.clone().detach().requires_grad_(True)
     out = model(tensor_req)  # forward through the full wrapper
-    if out.ndim == 2 and out.shape[-1] == 2:
-        score = torch.softmax(out, dim=1)[0, target_idx]
-    else:
-        out = out.view(-1)
-        score = out[0] if target_idx == 1 else (1.0 - out[0])
+    score = _select_target_score(out, target_idx)
 
     model.zero_grad(set_to_none=True)
     score.backward(retain_graph=False)
@@ -961,11 +1130,7 @@ def _gradcam_on_conv(model, tensor, target_idx: int):
 
     model.zero_grad(set_to_none=True)
     output = model(tensor)
-    if output.ndim == 2 and output.shape[-1] == 2:
-        score = output[0, int(target_idx)]
-    else:
-        prob = torch.sigmoid(output.view(-1)[0])
-        score = prob if int(target_idx) == 1 else (1.0 - prob)
+    score = _select_target_score(output, target_idx)
     score.backward()
 
     act = activations['value']
@@ -983,11 +1148,24 @@ def _gradcam_on_conv(model, tensor, target_idx: int):
     return cam[0, 0].detach().cpu().numpy()
 
 
+def _select_explainability_model_indices() -> tuple[int | None, int | None]:
+    if not MODELS:
+        return None, None
+    vit_idx = next((i for i, m in enumerate(MODELS) if _is_vit_model(m)), None)
+    primary_idx = vit_idx if vit_idx is not None else 0
+    cnn_idx = next(
+        (i for i, m in enumerate(MODELS) if _is_cnn_model(m) and i != primary_idx),
+        None,
+    )
+    return primary_idx, cnn_idx
+
+
 def generate_explainability_cams(
     input_tensor: np.ndarray,
     base_rgb: np.ndarray,
     predicted_idx: int,
     output_prefix: Path,
+    model=None,
 ) -> dict:
     """Generate and save both attention-rollout and Grad-CAM visualizations.
 
@@ -1000,10 +1178,12 @@ def generate_explainability_cams(
     gradcam_path = output_prefix.with_name(output_prefix.stem + "_gradcam.png")
     combined_path = output_prefix.with_name(output_prefix.stem + "_combined.png")
 
-    if not is_real_model_loaded() or not MODELS:
+    active_model = model or (MODELS[0] if MODELS else None)
+    if not is_real_model_loaded() or active_model is None:
         fallback = generate_explainability_cam(
             input_tensor, base_rgb, predicted_idx,
             output_prefix.with_name(output_prefix.stem + "_cam.png"),
+            model=active_model,
         )
         return {"attention_path": "", "gradcam_path": "", "combined_path": fallback}
 
@@ -1011,14 +1191,13 @@ def generate_explainability_cams(
     gradcam_saved = ""
 
     # Attempt attention rollout (ViT only)
-    if _is_vit_model(MODELS[0]):
+    if _is_vit_model(active_model):
         try:
             tensor = _as_input_tensor(input_tensor, requires_grad=False)
-            heat_att = _attention_rollout_for_vit(MODELS[0], tensor)
-            heat_rgb = _jet_colormap(heat_att)
-            base_rgb_r = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
-            blended = (0.6 * base_rgb_r + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
-            Image.fromarray(blended).save(attention_path)
+            heat_att = _postprocess_heatmap(
+                _attention_rollout_for_vit(active_model, tensor), base_rgb
+            )
+            Image.fromarray(_blend_heatmap(base_rgb, heat_att)).save(attention_path)
             attention_saved = str(attention_path)
         except Exception as exc:
             print(f"[XAI] Attention rollout failed: {exc}")
@@ -1027,14 +1206,12 @@ def generate_explainability_cams(
     # Attempt Grad-CAM
     try:
         tensor_g = _as_input_tensor(input_tensor, requires_grad=True)
-        if _is_vit_model(MODELS[0]):
-            heat_gc = _gradcam_on_patch_embed(MODELS[0], tensor_g, int(predicted_idx))
+        if _is_vit_model(active_model):
+            heat_gc = _gradcam_on_patch_embed(active_model, tensor_g, int(predicted_idx))
         else:
-            heat_gc = _gradcam_on_conv(MODELS[0], tensor_g, int(predicted_idx))
-        heat_rgb = _jet_colormap(heat_gc)
-        base_rgb_r = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
-        blended = (0.6 * base_rgb_r + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
-        Image.fromarray(blended).save(gradcam_path)
+            heat_gc = _gradcam_on_conv(active_model, tensor_g, int(predicted_idx))
+        heat_gc = _postprocess_heatmap(heat_gc, base_rgb)
+        Image.fromarray(_blend_heatmap(base_rgb, heat_gc)).save(gradcam_path)
         gradcam_saved = str(gradcam_path)
     except Exception as exc:
         print(f"[XAI] Grad-CAM failed: {exc}")
@@ -1049,7 +1226,13 @@ def generate_explainability_cams(
             parts.append(Image.open(gradcam_saved).convert("RGB"))
         if not parts:
             # Fallback to single saliency map using existing function
-            single = generate_explainability_cam(input_tensor, base_rgb, predicted_idx, output_prefix.with_name(output_prefix.stem + "_cam.png"))
+            single = generate_explainability_cam(
+                input_tensor,
+                base_rgb,
+                predicted_idx,
+                output_prefix.with_name(output_prefix.stem + "_cam.png"),
+                model=active_model,
+            )
             return {"attention_path": attention_saved, "gradcam_path": gradcam_saved, "combined_path": str(output_prefix.with_name(output_prefix.stem + "_cam.png"))}
 
         # Resize parts to same height and concatenate horizontally
@@ -1069,11 +1252,56 @@ def generate_explainability_cams(
     return {"attention_path": attention_saved, "gradcam_path": gradcam_saved, "combined_path": combined_saved}
 
 
+def generate_model_comparison_cams(
+    input_tensor: np.ndarray,
+    base_rgb: np.ndarray,
+    output_prefix: Path,
+) -> dict:
+    """Generate explainability maps for the primary model and optional CNN comparator."""
+    _ensure_model_ready()
+    if not is_real_model_loaded() or not MODELS:
+        return {}
+
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    primary_idx, cnn_idx = _select_explainability_model_indices()
+    results: dict = {}
+
+    def build_entry(model_idx: int, tag: str) -> dict:
+        model = MODELS[model_idx]
+        probs = _predict_model_probabilities(model, input_tensor)
+        pred_idx = int(probs.argmax())
+        prefix = output_prefix.with_name(f"{output_prefix.stem}_{tag}")
+        cams = generate_explainability_cams(
+            input_tensor=input_tensor,
+            base_rgb=base_rgb,
+            predicted_idx=pred_idx,
+            output_prefix=prefix,
+            model=model,
+        )
+        info = ACTIVE_MODEL_INFOS[model_idx] if model_idx < len(ACTIVE_MODEL_INFOS) else {}
+        return {
+            "model_name": info.get("name", "Unknown"),
+            "model_path": info.get("path", ""),
+            "prediction": CLASS_NAMES[pred_idx],
+            "confidence": float(probs[pred_idx]),
+            "attention_path": cams.get("attention_path", ""),
+            "gradcam_path": cams.get("gradcam_path", ""),
+            "combined_path": cams.get("combined_path", ""),
+        }
+
+    if primary_idx is not None:
+        results["classification"] = build_entry(primary_idx, "classification")
+    if cnn_idx is not None:
+        results["cnn"] = build_entry(cnn_idx, "cnn")
+    return results
+
+
 def generate_explainability_cam(
     input_tensor: np.ndarray,
     base_rgb: np.ndarray,
     predicted_idx: int,
     output_path: Path,
+    model=None,
 ) -> str:
     """Generate a saliency map (gradient-based when a real model is loaded,
     intensity-based otherwise). Works with or without OpenCV installed."""
@@ -1083,16 +1311,17 @@ def generate_explainability_cam(
     if not is_real_model_loaded():
         base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE)
         gray = (0.299 * base_rgb[..., 0] + 0.587 * base_rgb[..., 1] + 0.114 * base_rgb[..., 2])
-        gray = gray.astype(np.float32)
-        gray -= gray.min()
-        denom = max(float(gray.max()), 1e-8)
-        gray = gray / denom
-        heat_rgb = _jet_colormap(gray)
-        blended = (0.6 * base_rgb.astype(np.float32) + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
-        Image.fromarray(blended).save(output_path)
+        gray = _postprocess_heatmap(gray, base_rgb)
+        Image.fromarray(_blend_heatmap(base_rgb, gray)).save(output_path)
         return str(output_path)
 
-    primary_model = MODELS[0]
+    primary_model = model or (MODELS[0] if MODELS else None)
+    if primary_model is None:
+        base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE)
+        gray = (0.299 * base_rgb[..., 0] + 0.587 * base_rgb[..., 1] + 0.114 * base_rgb[..., 2])
+        gray = _postprocess_heatmap(gray, base_rgb)
+        Image.fromarray(_blend_heatmap(base_rgb, gray)).save(output_path)
+        return str(output_path)
     # Try Grad-CAM on patch embeddings first, fall back to attention rollout,
     # then fall back to input-gradient saliency.
     try:
@@ -1103,10 +1332,8 @@ def generate_explainability_cam(
                 heat = _gradcam_on_patch_embed(primary_model, tensor_g, int(predicted_idx))
             else:
                 heat = _gradcam_on_conv(primary_model, tensor_g, int(predicted_idx))
-            heat_rgb = _jet_colormap(heat)
-            base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
-            blended = (0.5 * base_rgb + 0.5 * heat_rgb).clip(0, 255).astype(np.uint8)
-            Image.fromarray(blended).save(output_path)
+            heat = _postprocess_heatmap(heat, base_rgb)
+            Image.fromarray(_blend_heatmap(base_rgb, heat)).save(output_path)
             return str(output_path)
         except Exception:
             pass
@@ -1115,11 +1342,10 @@ def generate_explainability_cam(
         if _is_vit_model(primary_model):
             try:
                 tensor = _as_input_tensor(input_tensor, requires_grad=False)
-                heat = _attention_rollout_for_vit(primary_model, tensor)
-                heat_rgb = _jet_colormap(heat)
-                base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
-                blended = (0.5 * base_rgb + 0.5 * heat_rgb).clip(0, 255).astype(np.uint8)
-                Image.fromarray(blended).save(output_path)
+                heat = _postprocess_heatmap(
+                    _attention_rollout_for_vit(primary_model, tensor), base_rgb
+                )
+                Image.fromarray(_blend_heatmap(base_rgb, heat)).save(output_path)
                 return str(output_path)
             except Exception:
                 pass
@@ -1128,34 +1354,19 @@ def generate_explainability_cam(
         tensor_in = _as_input_tensor(input_tensor, requires_grad=True)
         primary_model.zero_grad(set_to_none=True)
         output = primary_model(tensor_in)
-        if output.ndim == 2 and output.shape[-1] == 2:
-            target_score = torch.softmax(output, dim=1)[0, int(predicted_idx)]
-        else:
-            output = output.view(-1)
-            target_score = output[0] if int(predicted_idx) == 1 else (1.0 - output[0])
+        target_score = _select_target_score(output, predicted_idx)
         target_score.backward()
 
         grad_map = tensor_in.grad.detach().abs().mean(dim=1)[0].cpu().numpy()
-        grad_map = grad_map - grad_map.min()
-        denom = max(float(grad_map.max()), 1e-8)
-        grad_map = grad_map / denom
-
-        heat_rgb = _jet_colormap(grad_map)
-        base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE).astype(np.float32)
-        blended = (0.6 * base_rgb + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
-        Image.fromarray(blended).save(output_path)
+        grad_map = _postprocess_heatmap(grad_map, base_rgb)
+        Image.fromarray(_blend_heatmap(base_rgb, grad_map)).save(output_path)
         return str(output_path)
     except Exception as exc:
         # If anything unexpected fails, fall back to heuristic image-based map
         base_rgb = _resize_rgb(base_rgb, IMAGE_SIZE)
         gray = (0.299 * base_rgb[..., 0] + 0.587 * base_rgb[..., 1] + 0.114 * base_rgb[..., 2])
-        gray = gray.astype(np.float32)
-        gray -= gray.min()
-        denom = max(float(gray.max()), 1e-8)
-        gray = gray / denom
-        heat_rgb = _jet_colormap(gray)
-        blended = (0.6 * base_rgb.astype(np.float32) + 0.4 * heat_rgb).clip(0, 255).astype(np.uint8)
-        Image.fromarray(blended).save(output_path)
+        gray = _postprocess_heatmap(gray, base_rgb)
+        Image.fromarray(_blend_heatmap(base_rgb, gray)).save(output_path)
         return str(output_path)
 
 

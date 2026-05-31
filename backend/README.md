@@ -38,14 +38,18 @@ Model selection is handled in backend/dl_model.py.
 Priority order:
 1. Use MODEL_PATH environment variable if provided.
 2. Else use the bundled checkpoint at backend/models/DeiT-S/best_deit_model.pth.
-3. Next try backend/models/ViT_base/best_vit_model.pth (fallback ViT).
-4. If the model file is a wrapped checkpoint, the loader will extract the first supported state_dict key.
-5. If the model file is a Git LFS pointer, the backend will attempt `git lfs pull` once (disable with `AMD_AUTO_PULL_LFS=0`).
-6. If model loading fails or file is missing, use backup heuristic inference.
+3. Next try backend/models/CNN/best_resnet_model.pth (CNN comparator when present).
+4. Then try backend/models/ViT_base/best_vit_model.pth (fallback ViT).
+5. If the model file is a wrapped checkpoint, the loader will extract the first supported state_dict key.
+6. If the model file is a Git LFS pointer, the backend will attempt `git lfs pull` once (disable with `AMD_AUTO_PULL_LFS=0`).
+7. If model loading fails or file is missing, use backup heuristic inference.
 
 Response field model_type tells which one is active:
 - real
 - backup
+
+When both a ViT/DeiT checkpoint and a CNN checkpoint are loaded, predictions use
+the ViT/DeiT models while the CNN is kept for comparison heatmaps.
 
 ## Endpoint: POST /predict
 
@@ -96,7 +100,14 @@ Successful response includes:
 
 New behavior: the predict endpoint now also generates attention-rollout and Grad-CAM visualizations
 and saves them to `runtime/cams/` alongside the existing saliency map. The JSON response includes
-the fields `cam_attention_path`, `cam_gradcam_path`, and `cam_combined_path` when available.
+the fields `cam_attention_path`, `cam_gradcam_path`, and `cam_combined_path` (classification model).
+For model comparison, additional fields are provided:
+- cam_classification_model_name, cam_classification_model_path,
+  cam_classification_prediction, cam_classification_confidence,
+  cam_classification_attention_path, cam_classification_gradcam_path,
+  cam_classification_combined_path
+- cam_cnn_model_name, cam_cnn_model_path, cam_cnn_prediction, cam_cnn_confidence,
+  cam_cnn_attention_path, cam_cnn_gradcam_path, cam_cnn_combined_path
 
 Every prediction is auto-saved to the SQLite database (runtime/patient_records.db).
 
