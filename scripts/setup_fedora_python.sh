@@ -151,6 +151,7 @@ modules = [
     "pydicom",
     "PIL",
     "pytorch_grad_cam",
+    "captum",
     "requests",
     "sklearn",
     "streamlit",

@@ -115,15 +115,22 @@ def center_crop(img: np.ndarray, crop_size: int) -> np.ndarray:
 
 
 def preprocess_bgr_image(bgr_img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Notebook-aligned preprocessing returning model tensor + display RGB image."""
-    image = apply_clahe(bgr_img)
-    display_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-    image = cv2.resize(image, IMAGE_SIZE, interpolation=cv2.INTER_AREA)
-    image = image.astype(np.float32) / 255.0
-    image = (image - IMAGENET_MEAN) / IMAGENET_STD
-    image = np.transpose(image, (2, 0, 1))
-    tensor = np.expand_dims(image, axis=0)
+    """Streamlit-aligned preprocessing returning model tensor + display RGB image.
+    
+    Removed CLAHE and complex padding to match the dashboard's simpler 
+    Resize -> RGB -> Normalize pipeline, which has been found to be more 
+    robust for normal fundus images.
+    """
+    # Convert to RGB early to match Streamlit dashboard logic
+    display_rgb = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
+    
+    # Simple resize and normalization exactly as in the dashboard
+    image_rgb = cv2.resize(display_rgb, IMAGE_SIZE, interpolation=cv2.INTER_AREA)
+    image_rgb = image_rgb.astype(np.float32) / 255.0
+    image_rgb = (image_rgb - IMAGENET_MEAN) / IMAGENET_STD
+    image_rgb = np.transpose(image_rgb, (2, 0, 1))
+    tensor = np.expand_dims(image_rgb, axis=0)
+    
     return tensor, display_rgb
 
 

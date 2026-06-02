@@ -29,10 +29,18 @@ def initialize_database() -> None:
             image_path TEXT,
             prediction TEXT,
             confidence REAL,
-            date TEXT NOT NULL
+            date TEXT NOT NULL,
+            image_hash TEXT
         )
     """)
     
+    # Migration: Add image_hash column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute("ALTER TABLE patient ADD COLUMN image_hash TEXT")
+    except sqlite3.OperationalError:
+        # Column already exists
+        pass
+        
     conn.commit()
     conn.close()
     print(f"✓ Database initialized at: {DB_PATH}")
@@ -44,36 +52,14 @@ def insert_patient_record(
     image_path: Optional[str] = None,
     prediction: Optional[str] = None,
     confidence: Optional[float] = None,
-    date: Optional[str] = None
+    date: Optional[str] = None,
+    image_hash: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Insert a patient record into the database.
+    Insert or update a patient record into the database.
     
-    Args:
-        name (str): Patient's name (required)
-        age (int): Patient's age (required)
-        image_path (str, optional): Path to the patient's image
-        prediction (str, optional): Medical prediction or diagnosis
-        confidence (float, optional): Confidence score (0.0 to 1.0)
-        date (str, optional): Date of the record (ISO format). Defaults to current date.
-    
-    Returns:
-        dict: Response containing:
-            - success (bool): Whether insertion was successful
-            - message (str): Success or error message
-            - record_id (int): ID of the inserted record (if successful)
-            - data (dict): The inserted record details
-    
-    Example:
-        result = insert_patient_record(
-            name="John Doe",
-            age=45,
-            image_path="/path/to/image.jpg",
-            prediction="Pneumonia",
-            confidence=0.92,
-            date="2025-03-24"
-        )
-        print(result)
+    If image_hash is provided and already exists, the record is updated
+    (timeline update) instead of creating a new entry.
     """
     try:
         # Validate required fields
@@ -114,14 +100,32 @@ def insert_patient_record(
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Insert the record
-        cursor.execute("""
-            INSERT INTO patient (name, age, image_path, prediction, confidence, date)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (name, age, image_path, prediction, confidence, date))
+        # Deduplication logic: check if this image was already predicted
+        record_id = None
+        is_update = False
+        if image_hash:
+            cursor.execute("SELECT id FROM patient WHERE image_hash = ?", (image_hash,))
+            row = cursor.fetchone()
+            if row:
+                record_id = row[0]
+                is_update = True
         
-        # Get the ID of the inserted record
-        record_id = cursor.lastrowid
+        if is_update:
+            # Update the existing record's timeline and details
+            cursor.execute("""
+                UPDATE patient 
+                SET name = ?, age = ?, image_path = ?, prediction = ?, confidence = ?, date = ?
+                WHERE id = ?
+            """, (name, age, image_path, prediction, confidence, date, record_id))
+            message = "Patient record updated successfully"
+        else:
+            # Insert a new record
+            cursor.execute("""
+                INSERT INTO patient (name, age, image_path, prediction, confidence, date, image_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (name, age, image_path, prediction, confidence, date, image_hash))
+            record_id = cursor.lastrowid
+            message = "Patient record inserted successfully"
         
         conn.commit()
         conn.close()
@@ -129,8 +133,9 @@ def insert_patient_record(
         # Return success response
         return {
             "success": True,
-            "message": "Patient record inserted successfully",
+            "message": message,
             "record_id": record_id,
+            "is_update": is_update,
             "data": {
                 "id": record_id,
                 "name": name,
@@ -138,7 +143,8 @@ def insert_patient_record(
                 "image_path": image_path,
                 "prediction": prediction,
                 "confidence": confidence,
-                "date": date
+                "date": date,
+                "image_hash": image_hash
             }
         }
     

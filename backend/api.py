@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -8,7 +9,6 @@ from PIL import Image
 if __package__:
     from .dl_model import (
         CLASS_NAMES,
-        apply_filename_label_hint,
         generate_explainability_cam,
         get_model_status,
         list_available_models,
@@ -27,7 +27,6 @@ if __package__:
 else:
     from dl_model import (
         CLASS_NAMES,
-        apply_filename_label_hint,
         generate_explainability_cam,
         get_model_status,
         list_available_models,
@@ -155,10 +154,10 @@ def predict():
             print(f"Warning: could not parse patient_age value {patient_age_raw!r}; defaulting to 0.")
 
         image_bytes, image_path = get_request_image()
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
         input_tensor, cam_base_rgb = preprocess_for_inference(image_bytes)
 
         probs = predict_probabilities(input_tensor)
-        probs = apply_filename_label_hint(probs, image_path)
         pred_idx = int(probs.argmax())
         prediction = CLASS_NAMES[pred_idx]
         confidence = float(probs[pred_idx])
@@ -171,13 +170,14 @@ def predict():
             output_path=CAMS_DIR / f"{path_stem}_gradcampp.png",
         )
 
-        # Persist the scan to the patient database
+        # Persist or update the scan in the patient database
         db_result = insert_patient_record(
             name=patient_name if patient_name else "Unknown",
             age=patient_age if 0 <= patient_age <= 120 else 0,
             image_path=str(Path(image_path).resolve()),
             prediction=prediction,
             confidence=confidence,
+            image_hash=image_hash,
         )
         patient_id = db_result.get("record_id") if db_result.get("success") else None
 

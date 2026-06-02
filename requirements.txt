@@ -1,6 +1,7 @@
 flask
 flask-cors
 grad-cam
+captum
 matplotlib
 numpy
 opencv-python
