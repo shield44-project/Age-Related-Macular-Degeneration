@@ -1,13 +1,4 @@
-"""
-╔══════════════════════════════════════════════════════════════╗
-║        XAI Heatmap Analyser — Streamlit Dashboard           ║
-║  Grad-CAM · Grad-CAM++ · Score-CAM · Guided Grad-CAM        ║
-║  + Attention Rollout (ViT only)                              ║
-╚══════════════════════════════════════════════════════════════╝
-"""
-
 import io
-import os
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -15,15 +6,13 @@ from typing import Optional
 import numpy as np
 import streamlit as st
 import torch
+import torch.nn as st_nn
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 
 warnings.filterwarnings("ignore")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PAGE CONFIG
-# ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="XAI Heatmap Analyser",
     page_icon="🔬",
@@ -31,285 +20,184 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CUSTOM CSS — dark, clinical, precise
-# ──────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'IBM Plex Sans', sans-serif;
-}
-
-/* ── BACKGROUND ── */
-.stApp {
-    background: #0a0c10;
-    color: #c8d0db;
-}
-
-/* ── SIDEBAR ── */
-section[data-testid="stSidebar"] {
-    background: #0d1017 !important;
-    border-right: 1px solid #1e2530;
-}
-section[data-testid="stSidebar"] * {
-    color: #a0aab8 !important;
-}
+html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
+.stApp { background: #0a0c10; color: #c8d0db; }
+section[data-testid="stSidebar"] { background: #0d1017 !important; border-right: 1px solid #1e2530; }
+section[data-testid="stSidebar"] * { color: #a0aab8 !important; }
 section[data-testid="stSidebar"] .stSelectbox label,
 section[data-testid="stSidebar"] .stFileUploader label {
-    color: #5a9fd4 !important;
-    font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 11px !important;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    color: #5a9fd4 !important; font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 11px !important; letter-spacing: 0.08em; text-transform: uppercase;
 }
-
-/* ── HEADERS ── */
-h1, h2, h3 {
-    font-family: 'IBM Plex Mono', monospace !important;
-    letter-spacing: -0.02em;
-}
+h1, h2, h3 { font-family: 'IBM Plex Mono', monospace !important; letter-spacing: -0.02em; }
 h1 { color: #e8edf2 !important; font-size: 1.6rem !important; }
-h2 { color: #5a9fd4 !important; font-size: 1.1rem !important; font-weight: 600 !important; border-bottom: 1px solid #1e2530; padding-bottom: 6px; }
+h2 { color: #5a9fd4 !important; font-size: 1.1rem !important; font-weight: 600 !important;
+     border-bottom: 1px solid #1e2530; padding-bottom: 6px; }
 h3 { color: #7cb8e0 !important; font-size: 0.9rem !important; }
-
-/* ── METRIC CARDS ── */
-div[data-testid="metric-container"] {
-    background: #111620 !important;
-    border: 1px solid #1e2530 !important;
-    border-radius: 4px !important;
-    padding: 12px 16px !important;
-}
-div[data-testid="metric-container"] label {
-    color: #5a9fd4 !important;
-    font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 10px !important;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-}
+div[data-testid="metric-container"] { background: #111620 !important;
+    border: 1px solid #1e2530 !important; border-radius: 4px !important;
+    padding: 12px 16px !important; }
+div[data-testid="metric-container"] label { color: #5a9fd4 !important;
+    font-family: 'IBM Plex Mono', monospace !important; font-size: 10px !important;
+    letter-spacing: 0.1em; text-transform: uppercase; }
 div[data-testid="metric-container"] [data-testid="stMetricValue"] {
-    color: #e8edf2 !important;
-    font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 1.1rem !important;
-}
-
-/* ── HEATMAP CARDS ── */
-.heatmap-card {
-    background: #111620;
-    border: 1px solid #1e2530;
-    border-radius: 6px;
-    padding: 10px;
-    margin-bottom: 8px;
-    transition: border-color 0.2s;
-}
-.heatmap-card:hover { border-color: #2d4a6e; }
-
-.heatmap-label {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    padding: 4px 8px;
-    border-radius: 3px;
-    margin-bottom: 8px;
-    display: inline-block;
-}
-
-/* label colour per method */
-.label-gradcam      { background: #0e2235; color: #5a9fd4; border: 1px solid #1a3a5c; }
-.label-gradcampp    { background: #0e2a1a; color: #4ec98a; border: 1px solid #1a4a30; }
-.label-scorecam     { background: #2a1a0e; color: #e0974c; border: 1px solid #4a2e1a; }
-.label-guided       { background: #200e2a; color: #c47de0; border: 1px solid #3a1a4a; }
-.label-rollout      { background: #2a1a1a; color: #e05a5a; border: 1px solid #4a2020; }
-.label-input        { background: #1a1a0e; color: #d4c84e; border: 1px solid #3a3a1a; }
-
-/* ── CONFIDENCE BAR ── */
-.conf-bar-wrap {
-    background: #1a1f2a;
-    border-radius: 3px;
-    height: 6px;
-    width: 100%;
-    margin-top: 4px;
-}
-.conf-bar-fill {
-    height: 6px;
-    border-radius: 3px;
-    background: linear-gradient(90deg, #2d6fa8, #5ab4e0);
-}
-
-/* ── STATUS BADGE ── */
-.badge {
-    display: inline-block;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    padding: 2px 8px;
-    border-radius: 2px;
-    text-transform: uppercase;
-}
-.badge-vit  { background:#0e2235; color:#5a9fd4; border:1px solid #1a3a5c; }
-.badge-cnn  { background:#0e2a1a; color:#4ec98a; border:1px solid #1a4a30; }
-.badge-cpu  { background:#1a1a1a; color:#888; border:1px solid #333; }
-.badge-gpu  { background:#2a1a0e; color:#e0974c; border:1px solid #4a2e1a; }
-
-/* ── DIVIDER ── */
+    color: #e8edf2 !important; font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 1.1rem !important; }
+.heatmap-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase; padding: 4px 8px;
+    border-radius: 3px; margin-bottom: 8px; display: inline-block; }
+.label-gradcam    { background:#0e2235; color:#5a9fd4; border:1px solid #1a3a5c; }
+.label-gradcampp  { background:#0e2a1a; color:#4ec98a; border:1px solid #1a4a30; }
+.label-scorecam   { background:#2a1a0e; color:#e0974c; border:1px solid #4a2e1a; }
+.label-guided     { background:#200e2a; color:#c47de0; border:1px solid #3a1a4a; }
+.label-vitgradcam { background:#0e2a2a; color:#4ec9c9; border:1px solid #1a4a4a; }
+.label-rollout    { background:#2a1a1a; color:#e05a5a; border:1px solid #4a2020; }
+.label-transattr  { background:#2a2a0e; color:#c9c94e; border:1px solid #4a4a1a; }
+.label-input      { background:#1a1a0e; color:#d4c84e; border:1px solid #3a3a1a; }
+.conf-bar-wrap { background:#1a1f2a; border-radius:3px; height:6px; width:100%; margin-top:4px; }
+.conf-bar-fill { height:6px; border-radius:3px; background:linear-gradient(90deg,#2d6fa8,#5ab4e0); }
+.badge { display:inline-block; font-family:'IBM Plex Mono',monospace; font-size:10px;
+    letter-spacing:0.08em; padding:2px 8px; border-radius:2px; text-transform:uppercase; }
+.badge-vit { background:#0e2235; color:#5a9fd4; border:1px solid #1a3a5c; }
+.badge-cnn { background:#0e2a1a; color:#4ec98a; border:1px solid #1a4a30; }
 hr { border-color: #1e2530 !important; }
-
-/* ── SELECTBOX / FILE INPUT ── */
-.stSelectbox > div > div,
-.stFileUploader > div {
-    background: #111620 !important;
-    border-color: #1e2530 !important;
-    color: #c8d0db !important;
-}
-
-/* ── INFO / WARNING ── */
-.stAlert { border-radius: 4px !important; }
-
-/* ── SPINNER ── */
-.stSpinner > div { border-top-color: #5a9fd4 !important; }
+.stSelectbox > div > div, .stFileUploader > div {
+    background:#111620 !important; border-color:#1e2530 !important; color:#c8d0db !important; }
+.stAlert { border-radius:4px !important; }
+.stSpinner > div { border-top-color:#5a9fd4 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# IMAGENET CLASSES (top-1000, abbreviated for bundle size)
-# We load these lazily; if unavailable we fall back to "Class {idx}"
-# ──────────────────────────────────────────────────────────────────────────────
-@st.cache_data
-def load_imagenet_labels() -> dict:
-    try:
-        import urllib.request, json
-        url = "https://raw.githubusercontent.com/anishathalye/imagenet-simple-labels/master/imagenet-simple-labels.json"
-        with urllib.request.urlopen(url, timeout=3) as r:
-            return {i: v for i, v in enumerate(json.loads(r.read()))}
-    except Exception:
-        return {}
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX 1: timm import guard at module level — clear error, not buried in loader
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    import timm
+    TIMM_AVAILABLE = True
+except ImportError:
+    TIMM_AVAILABLE = False
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # MODEL LOADER
-# ──────────────────────────────────────────────────────────────────────────────
+# FIX 2: cache_resource keyed on path+arch+classes so stale patched model
+#         never persists across arch changes
+# FIX 3: DeiT model string updated for timm>=1.0 API
+# FIX 4: monkey-patch reset removed — we never patch forward() anymore;
+#         attention is captured via hooks only (see hook section below)
+# ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model(pth_path: str, arch: str, num_classes: int, device: str):
-    """Load a .pth checkpoint into the requested torchvision architecture."""
     import torchvision.models as tvm
 
     arch = arch.lower()
-
-    # ── CNN backbones ──
     cnn_map = {
-        "resnet18":   tvm.resnet18,
-        "resnet34":   tvm.resnet34,
-        "resnet50":   tvm.resnet50,
-        "resnet101":  tvm.resnet101,
-        "densenet121":tvm.densenet121,
-        "densenet169":tvm.densenet169,
-        "efficientnet_b0": tvm.efficientnet_b0,
-        "efficientnet_b3": tvm.efficientnet_b3,
+        "resnet18": tvm.resnet18, "resnet34": tvm.resnet34,
+        "resnet50": tvm.resnet50, "resnet101": tvm.resnet101,
+        "densenet121": tvm.densenet121, "densenet169": tvm.densenet169,
+        "efficientnet_b0": tvm.efficientnet_b0, "efficientnet_b3": tvm.efficientnet_b3,
         "efficientnet_b4": tvm.efficientnet_b4,
-        "mobilenet_v2":    tvm.mobilenet_v2,
-        "mobilenet_v3_small": tvm.mobilenet_v3_small,
-        "vgg16":      tvm.vgg16,
+        "mobilenet_v2": tvm.mobilenet_v2, "mobilenet_v3_small": tvm.mobilenet_v3_small,
+        "vgg16": tvm.vgg16,
     }
-    # ── ViT backbones ──
-    vit_map = {
-        "vit_b_16":   tvm.vit_b_16,
-        "vit_b_32":   tvm.vit_b_32,
-        "vit_l_16":   tvm.vit_l_16,
-    }
+    vit_map  = {"vit_b_16": tvm.vit_b_16, "vit_b_32": tvm.vit_b_32, "vit_l_16": tvm.vit_l_16}
 
-    # ── DeiT backbones (via timm) ──
-    deit_map = {
-        "deit_s": "deit_small_patch16_224",
-    }
+    # FIX 3: timm>=1.0 correct model string for DeiT-S
+    deit_map = {"deit_s": "deit_small_patch16_224.fb_in1k"}
 
     is_vit = arch in vit_map or arch in deit_map
 
     if arch in cnn_map:
         model = cnn_map[arch](weights=None)
-        # replace final layer
         if hasattr(model, "fc"):
-            in_f = model.fc.in_features
-            model.fc = nn.Linear(in_f, num_classes)
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
         elif hasattr(model, "classifier"):
             clf = model.classifier
             if isinstance(clf, nn.Sequential):
-                in_f = clf[-1].in_features
-                clf[-1] = nn.Linear(in_f, num_classes)
+                clf[-1] = nn.Linear(clf[-1].in_features, num_classes)
             elif isinstance(clf, nn.Linear):
-                in_f = clf.in_features
-                model.classifier = nn.Linear(in_f, num_classes)
+                model.classifier = nn.Linear(clf.in_features, num_classes)
     elif arch in vit_map:
         model = vit_map[arch](weights=None)
-        in_f = model.heads.head.in_features
-        model.heads.head = nn.Linear(in_f, num_classes)
-        is_vit = True
+        model.heads.head = nn.Linear(model.heads.head.in_features, num_classes)
     elif arch in deit_map:
-        try:
-            import timm
-        except ImportError:
-            raise ImportError(
-                "DeiT-S requires the 'timm' package. "
-                "Install it with:  pip install timm"
-            )
+        # FIX 1: proper guard with user-facing error in UI
+        if not TIMM_AVAILABLE:
+            st.error("timm not installed. Add `timm>=1.0.0` to requirements.txt and restart.")
+            st.stop()
         model = timm.create_model(
             deit_map[arch],
             pretrained=False,
-            num_classes=num_classes,
+            num_classes=num_classes
         )
-        is_vit = True
     else:
         raise ValueError(f"Unknown architecture: {arch}")
 
-    state = torch.load(pth_path, map_location=device)
-    # handle common checkpoint wrappers
+    state = torch.load(pth_path, map_location=device, weights_only=False)
     if isinstance(state, dict):
         for key in ("model_state_dict", "state_dict", "model"):
             if key in state:
                 state = state[key]
                 break
     model.load_state_dict(state, strict=False)
+
+    # FIX 8: timm DeiT/ViT uses fused_attn=True by default which calls
+    # F.scaled_dot_product_attention — a fused CUDA kernel that NEVER
+    # materialises the [B,H,N,N] attention matrix in Python memory.
+    # attn_drop hook therefore sees nothing. Disable it so the explicit
+    # attn = softmax(q @ k.T) path runs and hooks capture real tensors.
+    if is_vit:
+        for mod in model.modules():
+            if hasattr(mod, "fused_attn"):
+                mod.fused_attn = False
+
     model.to(device)
     model.eval()
     return model, is_vit
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # PRE-PROCESSING
-# ──────────────────────────────────────────────────────────────────────────────
-_MEAN = torch.tensor([0.485, 0.456, 0.406])
-_STD  = torch.tensor([0.229, 0.224, 0.225])
+# ─────────────────────────────────────────────────────────────────────────────
+_MEAN     = torch.tensor([0.485, 0.456, 0.406])
+_STD      = torch.tensor([0.229, 0.224, 0.225])
+_BASELINE = (-_MEAN / _STD).view(1, 3, 1, 1)
+
 
 def preprocess(img_pil: Image.Image, device: str) -> torch.Tensor:
     img = img_pil.convert("RGB").resize((224, 224))
-    t   = torch.from_numpy(np.array(img)).float() / 255.0  # (H,W,3)
+    t   = torch.from_numpy(np.array(img)).float() / 255.0
     t   = (t - _MEAN) / _STD
-    return t.permute(2, 0, 1).unsqueeze(0).to(device)      # (1,3,224,224)
+    return t.permute(2, 0, 1).unsqueeze(0).to(device)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # COLOUR HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 def jet_colormap(gray01: np.ndarray) -> np.ndarray:
-    g     = np.clip(gray01.astype(np.float32), 0, 1)
-    fg    = 4.0 * g
-    r     = np.clip(np.minimum(fg - 1.5, -fg + 4.5), 0, 1)
-    gr    = np.clip(np.minimum(fg - 0.5, -fg + 3.5), 0, 1)
-    b     = np.clip(np.minimum(fg + 0.5, -fg + 2.5), 0, 1)
+    g  = np.clip(gray01.astype(np.float32), 0, 1)
+    fg = 4.0 * g
+    r  = np.clip(np.minimum(fg - 1.5, -fg + 4.5), 0, 1)
+    gr = np.clip(np.minimum(fg - 0.5, -fg + 3.5), 0, 1)
+    b  = np.clip(np.minimum(fg + 0.5, -fg + 2.5), 0, 1)
     return (np.stack([r, gr, b], axis=-1) * 255).astype(np.uint8)
 
+
 def blend(base_rgb: np.ndarray, heat_rgb: np.ndarray, alpha: float = 0.45) -> np.ndarray:
-    base  = base_rgb.astype(np.float32)
-    heat  = heat_rgb.astype(np.float32)
-    out   = np.clip((1 - alpha) * base + alpha * heat, 0, 255).astype(np.uint8)
-    return out
+    return np.clip(
+        (1 - alpha) * base_rgb.astype(np.float32) + alpha * heat_rgb.astype(np.float32),
+        0, 255,
+    ).astype(np.uint8)
+
 
 def norm01(arr: np.ndarray) -> np.ndarray:
     mn, mx = arr.min(), arr.max()
     return (arr - mn) / (mx - mn + 1e-8)
+
 
 def resize_map(arr: np.ndarray, hw=(224, 224)) -> np.ndarray:
     pil = Image.fromarray((norm01(arr) * 255).astype(np.uint8))
@@ -317,482 +205,606 @@ def resize_map(arr: np.ndarray, hw=(224, 224)) -> np.ndarray:
     return np.array(pil, dtype=np.float32) / 255.0
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GRAD-CAM
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# CNN BACKPROP ENGINES
+# ─────────────────────────────────────────────────────────────────────────────
+def find_last_conv(model: nn.Module) -> Optional[nn.Module]:
+    last_standard = None
+    last_any      = None
+    for mod in model.modules():
+        if not isinstance(mod, nn.Conv2d):
+            continue
+        last_any = mod
+        kh = mod.kernel_size[0] if isinstance(mod.kernel_size, tuple) else mod.kernel_size
+        kw = mod.kernel_size[1] if isinstance(mod.kernel_size, tuple) else mod.kernel_size
+        is_spatial   = kh > 1 or kw > 1
+        is_depthwise = mod.groups == mod.in_channels and mod.in_channels > 1
+        if is_spatial and not is_depthwise:
+            last_standard = mod
+    return last_standard if last_standard is not None else last_any
+
+
 class GradCAM:
     def __init__(self, model: nn.Module, target_layer: nn.Module):
-        self.model        = model
-        self.gradients    = None
-        self.activations  = None
-        self._fwd = target_layer.register_forward_hook(self._save_act)
-        self._bwd = target_layer.register_full_backward_hook(self._save_grad)
+        self.model = model
+        self.target_layer = target_layer
+        self._activation = None
+        self._fwd = target_layer.register_forward_hook(self._fwd_hook)
 
-    def _save_act(self, _, __, out):  self.activations = out.detach()
-    def _save_grad(self, _, __, go):  self.gradients   = go[0].detach()
+    def _fwd_hook(self, m, inp, out):
+        self._activation = out
 
     def remove(self):
-        self._fwd.remove(); self._bwd.remove()
+        self._fwd.remove()
 
     def __call__(self, x: torch.Tensor, class_idx: int) -> np.ndarray:
-        self.model.zero_grad()
-        logits = self.model(x)
-        logits[0, class_idx].backward()
+        x = x.detach().requires_grad_(True)
+        with torch.enable_grad():
+            self.model.zero_grad()
+            out = self.model(x)
+            if self._activation is not None:
+                self._activation.retain_grad()
+            out[0, class_idx].backward()
 
-        w   = self.gradients.mean(dim=(2, 3), keepdim=True)      # (1,C,1,1)
-        cam = F.relu((w * self.activations).sum(dim=1, keepdim=True))  # (1,1,h,w)
+        act  = self._activation
+        grad = act.grad if (act is not None and act.grad is not None) else None
+        if act is None or grad is None:
+            return np.zeros((224, 224), dtype=np.float32)
+
+        w   = grad.mean(dim=(2, 3), keepdim=True)
+        cam = F.relu((w * act.detach()).sum(dim=1, keepdim=True))
         return resize_map(cam[0, 0].cpu().numpy())
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GRAD-CAM++
-# ──────────────────────────────────────────────────────────────────────────────
 class GradCAMPlusPlus:
     def __init__(self, model: nn.Module, target_layer: nn.Module):
         self.model       = model
-        self.gradients   = None
-        self.activations = None
-        self._fwd = target_layer.register_forward_hook(self._save_act)
-        self._bwd = target_layer.register_full_backward_hook(self._save_grad)
+        self._activation = None
+        self._fwd = target_layer.register_forward_hook(self._fwd_hook)
 
-    def _save_act(self, _, __, out): self.activations = out.detach()
-    def _save_grad(self, _, __, go): self.gradients   = go[0].detach()
+    def _fwd_hook(self, m, inp, out):
+        self._activation = out
 
     def remove(self):
-        self._fwd.remove(); self._bwd.remove()
+        self._fwd.remove()
 
     def __call__(self, x: torch.Tensor, class_idx: int) -> np.ndarray:
-        self.model.zero_grad()
-        logits = self.model(x)
-        logits[0, class_idx].backward()
+        x = x.detach().requires_grad_(True)
+        with torch.enable_grad():
+            self.model.zero_grad()
+            out = self.model(x)
+            if self._activation is not None:
+                self._activation.retain_grad()
+            out[0, class_idx].backward()
 
-        grads = self.gradients          # (1,C,H,W)
-        acts  = self.activations        # (1,C,H,W)
+        act  = self._activation
+        grad = act.grad if (act is not None and act.grad is not None) else None
+        if act is None or grad is None:
+            return np.zeros((224, 224), dtype=np.float32)
 
-        grads2 = grads ** 2
-        grads3 = grads ** 3
-        denom  = 2 * grads2 + (acts * grads3).sum(dim=(2, 3), keepdim=True) + 1e-8
-        alpha  = grads2 / denom
-        w      = (alpha * F.relu(grads)).sum(dim=(2, 3), keepdim=True)
-        cam    = F.relu((w * acts).sum(dim=1, keepdim=True))
+        act_d = act.detach()
+        g     = grad.detach()
+        g2    = g ** 2
+        g3    = g ** 3
+        sum_A = (act_d * g3).sum(dim=(2, 3), keepdim=True)
+        denom = 2.0 * g2 + sum_A + 1e-7
+        alpha = torch.where(denom.abs() > 1e-7, g2 / denom, torch.zeros_like(g2))
+        w     = (alpha * F.relu(g)).sum(dim=(2, 3), keepdim=True)
+        cam   = F.relu((w * act_d).sum(dim=1, keepdim=True))
         return resize_map(cam[0, 0].cpu().numpy())
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SCORE-CAM  (mask-based, no backward pass)
-# ──────────────────────────────────────────────────────────────────────────────
-def score_cam(
-    model: nn.Module,
-    x: torch.Tensor,
-    target_layer: nn.Module,
-    class_idx: int,
-    max_masks: int = 32,
-) -> np.ndarray:
-    activations = {}
-
-    def hook(_, __, out):
-        activations["act"] = out.detach()
-
-    h = target_layer.register_forward_hook(hook)
+def score_cam(model: nn.Module, x: torch.Tensor, target_layer: nn.Module,
+              class_idx: int, max_masks: int = 32) -> np.ndarray:
+    acts = {}
+    h = target_layer.register_forward_hook(lambda m, i, o: acts.update({"a": o.detach()}))
     with torch.no_grad():
-        baseline_logits = model(x)
+        model(x)
     h.remove()
 
-    act = activations["act"][0]          # (C, h, w)
-    C   = min(act.shape[0], max_masks)   # limit for speed
+    act = acts["a"][0]
+    C   = min(act.shape[0], max_masks)
     act = act[:C]
+    baseline = _BASELINE.to(x.device)
+    scores   = torch.zeros(C, device=x.device)
 
-    scores = torch.zeros(C, device=x.device)
-    for i in range(C):
-        m = resize_map(act[i].cpu().numpy())                     # (224,224) in [0,1]
-        mask = torch.from_numpy(m).float().to(x.device).unsqueeze(0).unsqueeze(0)
-        masked_x = x * mask
-        with torch.no_grad():
-            logits = model(masked_x)
-        scores[i] = F.softmax(logits, dim=1)[0, class_idx]
+    pbar = st.progress(0, text=f"Score-CAM: mask 0 / {C}")
+    with torch.no_grad():
+        for i in range(C):
+            mask_np    = resize_map(act[i].cpu().numpy())
+            mask       = torch.from_numpy(mask_np).float().to(x.device).unsqueeze(0).unsqueeze(0)
+            masked     = baseline + mask * (x - baseline)
+            logits     = model(masked)
+            scores[i]  = F.softmax(logits, dim=1)[0, class_idx]
+            pbar.progress(int((i + 1) / C * 100), text=f"Score-CAM: mask {i+1} / {C}")
+    pbar.empty()
 
-    w   = scores.view(-1, 1, 1)                                  # (C,1,1)
-    cam = F.relu((w * act).sum(dim=0)).cpu().numpy()             # (h,w)
+    cam = (scores.view(-1, 1, 1) * act).sum(dim=0).cpu().numpy()
+    return resize_map(F.relu(torch.from_numpy(cam)).numpy())
+
+
+class VanillaSaliency:
+    def __init__(self, model: nn.Module):
+        self.model = model
+
+    def remove(self):
+        pass
+
+    def __call__(self, x: torch.Tensor, class_idx: int) -> np.ndarray:
+        x = x.detach().requires_grad_(True)
+        with torch.enable_grad():
+            self.model.zero_grad()
+            out = self.model(x)
+            out[0, class_idx].backward()
+        grad = x.grad[0].cpu().numpy()
+        grad = np.abs(grad).mean(axis=0)
+        return norm01(grad)
+
+
+def guided_gradcam(saliency: np.ndarray, cam: np.ndarray) -> np.ndarray:
+    return norm01(saliency * cam)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX 5 + FIX 6: ATTENTION HOOK COLLECTOR
+# No monkey-patching of forward(). Pure register_forward_hook only.
+# Covers timm DeiT/ViT (proj_drop, attn_drop) AND torchvision ViT (MHA).
+# Tuple output from blocks handled safely.
+# ─────────────────────────────────────────────────────────────────────────────
+def _collect_attn_hooks(model: nn.Module):
+    """
+    Returns list of (kind, module) tuples for attention modules.
+    Covers:
+      - timm DeiT/ViT: hooks on attn_drop or proj_drop (input is [B,H,N,N] matrix)
+      - torchvision ViT: nn.MultiheadAttention modules
+    """
+    targets = []
+
+    # timm>=1.0: attention weight tensor flows through attn_drop
+    # name patterns: blocks.X.attn.attn_drop  OR  blocks.X.attn.proj_drop
+    for name, mod in model.named_modules():
+        n = name.lower()
+        if ("attn.attn_drop" in n or "attn.proj_drop" in n):
+            targets.append(("timm_drop", mod))
+
+    if not targets:
+        # torchvision ViT path
+        for name, mod in model.named_modules():
+            if isinstance(mod, nn.MultiheadAttention):
+                targets.append(("torchvision_mha", mod))
+
+    return targets
+
+
+def _register_attn_collection(targets, store: list, retain_gradients: bool = False):
+    """
+    Registers hooks WITHOUT monkey-patching forward().
+    For MHA we use need_weights via a pre-hook that sets kwargs.
+    Returns (hooks_list, {}) — empty dict, no patched forwards.
+    """
+    hooks = []
+
+    for kind, mod in targets:
+        if kind == "timm_drop":
+            # input[0] to dropout layer is the [B, H, N, N] attention weight matrix
+            def make_hook(s, rg):
+                def hook(m, inp, out):
+                    if inp and isinstance(inp[0], torch.Tensor) and inp[0].ndim == 4:
+                        attn_mat = inp[0].detach() if not rg else inp[0]
+                        if rg and attn_mat.requires_grad:
+                            attn_mat.retain_grad()
+                        s.append(attn_mat)
+                return hook
+            hooks.append(mod.register_forward_hook(make_hook(store, retain_gradients)))
+
+        elif kind == "torchvision_mha":
+            # FIX 6: use pre_hook to inject need_weights=True, average_attn_weights=False
+            # without touching forward() directly
+            def make_pre_hook():
+                def pre_hook(m, args, kwargs):
+                    kwargs["need_weights"]         = True
+                    kwargs["average_attn_weights"] = False
+                    return args, kwargs
+                return pre_hook
+
+            def make_post_hook(s, rg):
+                def post_hook(m, inp, out):
+                    if isinstance(out, tuple) and len(out) == 2:
+                        w = out[1]
+                        if isinstance(w, torch.Tensor) and w.ndim in (3, 4):
+                            if w.ndim == 3:
+                                w = w.unsqueeze(1)
+                            w = w.detach() if not rg else w
+                            if rg and w.requires_grad:
+                                w.retain_grad()
+                            s.append(w)
+                return post_hook
+
+            hooks.append(mod.register_forward_pre_hook(make_pre_hook(), with_kwargs=True))
+            hooks.append(mod.register_forward_hook(make_post_hook(store, retain_gradients)))
+
+    return hooks, {}   # empty dict — no patched forwards to restore
+
+
+def _restore_forwards(_):
+    pass   # no-op; nothing patched
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX 7: vit_gradcam — handle tuple output from block forward safely
+# ─────────────────────────────────────────────────────────────────────────────
+def vit_gradcam(model: nn.Module, x: torch.Tensor, class_idx: int) -> Optional[np.ndarray]:
+    target = None
+
+    if hasattr(model, "blocks") and len(model.blocks) > 0:
+        target = model.blocks[-1]
+    elif hasattr(model, "encoder") and hasattr(model.encoder, "layers"):
+        target = model.encoder.layers[-1]
+
+    if target is None:
+        return None
+
+    saved: dict = {}
+
+    def fwd_hook(m, inp, out):
+        # FIX 7: handle tuple output (some timm versions return (x, attn))
+        t = out[0] if isinstance(out, (tuple, list)) else out
+        if isinstance(t, torch.Tensor) and t.ndim == 3:
+            saved["act"] = t
+
+    def bwd_hook(m, gin, gout):
+        for g in gout:
+            if isinstance(g, torch.Tensor) and g.ndim == 3:
+                saved["grad"] = g.detach()
+                return
+
+    h1 = target.register_forward_hook(fwd_hook)
+    h2 = target.register_full_backward_hook(bwd_hook)
+
+    x = x.detach().requires_grad_(True)
+    with torch.enable_grad():
+        model.zero_grad()
+        out = model(x)
+        if "act" in saved and saved["act"].requires_grad:
+            saved["act"].retain_grad()
+        out[0, class_idx].backward()
+
+    h1.remove()
+    h2.remove()
+
+    if "act" not in saved or "grad" not in saved:
+        return np.zeros((224, 224), dtype=np.float32)
+
+    act  = saved["act"][0, 1:].detach()
+    grad = saved["grad"][0, 1:].detach() if saved["grad"] is not None else torch.ones_like(act)
+
+    weights = grad.mean(dim=-1)
+    cam     = F.relu((weights.unsqueeze(-1) * act).sum(dim=-1))
+
+    n    = cam.shape[0]
+    side = int(n ** 0.5)
+    if side * side != n:
+        side = int(np.sqrt(n))
+        cam  = cam[:side * side]
+
+    cam = cam.reshape(side, side).cpu().numpy()
     return resize_map(cam)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GUIDED BACKPROP
-# ──────────────────────────────────────────────────────────────────────────────
-class GuidedBackprop:
-    def __init__(self, model: nn.Module):
-        self.model = model
-        self.hooks: list = []
-        self._register()
-
-    def _register(self):
-        for mod in self.model.modules():
-            if isinstance(mod, nn.ReLU):
-                h = mod.register_backward_hook(self._guide)
-                self.hooks.append(h)
-
-    @staticmethod
-    def _guide(_, grad_in, grad_out):
-        return (F.relu(grad_in[0]),)
-
-    def remove(self):
-        for h in self.hooks: h.remove()
-
-    def __call__(self, x: torch.Tensor, class_idx: int) -> np.ndarray:
-        x = x.requires_grad_(True)
-        self.model.zero_grad()
-        out = self.model(x)
-        out[0, class_idx].backward()
-        gb  = x.grad[0].cpu().numpy()           # (3,224,224)
-        gb  = np.maximum(gb, 0).mean(axis=0)    # (224,224)  guided = only positive
-        return norm01(gb)
-
-
-def guided_gradcam(
-    gb_map: np.ndarray, cam_map: np.ndarray
-) -> np.ndarray:
-    return norm01(gb_map * cam_map)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ATTENTION ROLLOUT  (ViT only)
-# ──────────────────────────────────────────────────────────────────────────────
 def attention_rollout(model: nn.Module, x: torch.Tensor, discard: float = 0.9) -> np.ndarray:
     attn_maps: list = []
-    hooks: list     = []
-
-    def hook(_, __, out):
-        if isinstance(out, torch.Tensor) and out.ndim == 4:
-            attn_maps.append(out.detach().cpu())
-
-    for _, mod in model.named_modules():
-        if "Attention" in mod.__class__.__name__ or "MultiheadAttention" in mod.__class__.__name__:
-            hooks.append(mod.register_forward_hook(hook))
-
-    with torch.no_grad():
-        model(x)
-    for h in hooks: h.remove()
-
-    if not attn_maps:
+    targets = _collect_attn_hooks(model)
+    if not targets:
+        st.warning("Attention Rollout: no attention modules found.")
         return np.zeros((224, 224), dtype=np.float32)
 
-    B = attn_maps[0].shape[0]
-    seq = attn_maps[0].shape[2]
-    rollout = torch.eye(seq).unsqueeze(0)
+    hooks, _ = _register_attn_collection(targets, attn_maps, retain_gradients=False)
+    with torch.no_grad():
+        model(x)
 
-    for am in attn_maps:
-        avg  = am.mean(dim=1)        # (B, seq, seq)
+    for h in hooks:
+        h.remove()
+
+    # FIX: reduce [B,H,N,N] → [N,N] immediately, discard raw tensor to free RAM
+    valid_reduced = []
+    for a in attn_maps:
+        if a.ndim == 4 and a.shape[2] == a.shape[3]:
+            valid_reduced.append(a.detach().cpu().mean(dim=1).squeeze(0))
+    del attn_maps
+
+    if not valid_reduced:
+        st.warning("Attention Rollout: hooks fired but no valid [B,H,N,N] tensors captured.")
+        return np.zeros((224, 224), dtype=np.float32)
+
+    seq     = valid_reduced[0].shape[0]
+    rollout = torch.eye(seq)
+
+    for avg in valid_reduced:
         if discard > 0:
-            thresh = torch.quantile(avg.reshape(B, -1), discard, dim=1).reshape(B, 1, 1)
-            avg = torch.where(avg < thresh, torch.zeros_like(avg), avg)
-        avg  = avg / (avg.sum(dim=2, keepdim=True) + 1e-8)
-        rollout = torch.bmm(avg, rollout)
+            flat   = avg.flatten()
+            thresh = torch.quantile(flat, discard)
+            avg    = torch.where(avg < thresh, torch.zeros_like(avg), avg)
 
-    cls_attn = rollout[0, 0, 1:].numpy()
-    side     = int(np.sqrt(len(cls_attn)))
-    if side * side != len(cls_attn):
-        side = int(np.sqrt(len(cls_attn) + 0.5))
-    spatial  = cls_attn[:side*side].reshape(side, side)
-    return resize_map(spatial)
+        I       = torch.eye(seq)
+        a_fused = 0.5 * avg + 0.5 * I
+        a_fused = a_fused / a_fused.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        rollout = torch.mm(a_fused, rollout)
+        del avg, a_fused
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# LAST CONV LAYER FINDER
-# ──────────────────────────────────────────────────────────────────────────────
-def find_last_conv(model: nn.Module) -> Optional[nn.Module]:
-    last = None
-    for mod in model.modules():
-        if isinstance(mod, nn.Conv2d):
-            last = mod
-    return last
+    cls_attn = rollout[0, 1:].numpy()
+    side = int(cls_attn.shape[0] ** 0.5)
+    import gc; gc.collect()
+    return resize_map(cls_attn[:side * side].reshape(side, side))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# RUN ALL XAI METHODS
-# ──────────────────────────────────────────────────────────────────────────────
-def run_xai(model, x, class_idx, is_vit, device):
-    results = {}
+def transformer_attribution(model: nn.Module, x: torch.Tensor, class_idx: int) -> np.ndarray:
+    attn_tensors: list = []
+    targets = _collect_attn_hooks(model)
+    if not targets:
+        st.warning("Transformer Attribution: no attention modules found.")
+        return np.zeros((224, 224), dtype=np.float32)
+
+    hooks, _ = _register_attn_collection(targets, attn_tensors, retain_gradients=True)
+
+    x = x.detach().requires_grad_(True)
+    with torch.enable_grad():
+        model.zero_grad()
+        logits  = model(x)
+        one_hot = torch.zeros_like(logits)
+        one_hot[0, class_idx] = 1.0
+        logits.backward(gradient=one_hot, retain_graph=True)
+
+    for h in hooks:
+        h.remove()
+
+    valid_maps = [at for at in attn_tensors if at.ndim == 4]
+    del attn_tensors
+    if not valid_maps:
+        st.warning("Transformer Attribution: no valid attention maps with gradients captured.")
+        return np.zeros((224, 224), dtype=np.float32)
+
+    seq = valid_maps[0].shape[-1]
+    R   = torch.eye(seq)
+
+    for at in valid_maps:
+        at_det = at.detach().cpu()
+        grad   = at.grad.detach().cpu() if at.grad is not None else torch.zeros_like(at_det)
+        cam    = (at_det * F.relu(grad)).mean(dim=1).squeeze(0)
+        del at_det, grad
+        I   = torch.eye(seq)
+        cam = I + cam
+        cam = cam / cam.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        R   = torch.mm(cam, R)
+        del cam
+
+    del valid_maps
+    import gc; gc.collect()
+
+    cls_rel = R[0, 1:].numpy()
+    side    = int(cls_rel.shape[0] ** 0.5)
+    return resize_map(cls_rel[:side * side].reshape(side, side))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIPELINE ROUTER
+# ─────────────────────────────────────────────────────────────────────────────
+def run_xai(model, x, class_idx, is_vit, arch, device, discard_ratio, score_cam_masks, status_box=None):
+    results: dict = {}
+
+    def _status(msg):
+        if status_box is not None:
+            status_box.info(f"⚙️ {msg}")
 
     if not is_vit:
-        target_layer = find_last_conv(model)
+        if hasattr(model, "layer4"):
+            target_layer = model.layer4[-1]
+        else:
+            target_layer = find_last_conv(model)
+
         if target_layer is None:
-            st.warning("Could not find a Conv2d layer — Grad-CAM methods unavailable.")
+            st.warning("No standard features layer caught.")
             return results
 
-        # ── Grad-CAM ──
         try:
-            gc = GradCAM(model, target_layer)
-            results["Grad-CAM"] = gc(x.clone(), class_idx)
-            gc.remove()
+            _status("Running Grad-CAM++...")
+            obj = GradCAMPlusPlus(model, target_layer)
+            results["Grad-CAM++"] = obj(x.clone(), class_idx)
+            obj.remove()
         except Exception as e:
-            st.warning(f"Grad-CAM failed: {e}")
+            st.warning(f"Grad-CAM++ error: {e}")
 
-        # ── Grad-CAM++ ──
         try:
-            gc2 = GradCAMPlusPlus(model, target_layer)
-            results["Grad-CAM++"] = gc2(x.clone(), class_idx)
-            gc2.remove()
+            _status("Running Score-CAM (slowest — progress bar below)...")
+            results["Score-CAM"] = score_cam(model, x.clone(), target_layer, class_idx, score_cam_masks)
         except Exception as e:
-            st.warning(f"Grad-CAM++ failed: {e}")
-
-        # ── Score-CAM ──
-        try:
-            results["Score-CAM"] = score_cam(model, x.clone(), target_layer, class_idx)
-        except Exception as e:
-            st.warning(f"Score-CAM failed: {e}")
-
-        # ── Guided Grad-CAM ──
-        try:
-            gbp = GuidedBackprop(model)
-            gb  = gbp(x.clone(), class_idx)
-            gbp.remove()
-            gc3 = GradCAM(model, target_layer)
-            cam3 = gc3(x.clone(), class_idx)
-            gc3.remove()
-            results["Guided Grad-CAM"] = guided_gradcam(gb, cam3)
-        except Exception as e:
-            st.warning(f"Guided Grad-CAM failed: {e}")
+            st.warning(f"Score-CAM error: {e}")
 
     else:
-        # ViT: Attention Rollout only for the 5th slot; others are blank
-        results["Grad-CAM"]         = None   # not applicable
-        results["Grad-CAM++"]       = None
-        results["Score-CAM"]        = None
-        results["Guided Grad-CAM"]  = None
         try:
-            results["Attention Rollout"] = attention_rollout(model, x.clone())
+            _status("Running Attention Rollout...")
+            results["Attention Rollout"] = attention_rollout(model, x.clone(), discard=discard_ratio)
         except Exception as e:
-            st.warning(f"Attention Rollout failed: {e}")
+            st.warning(f"Attention Rollout error: {e}")
             results["Attention Rollout"] = np.zeros((224, 224), dtype=np.float32)
 
+    _status("Done.")
     return results
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# RENDER A SINGLE HEATMAP CARD
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# RENDER
+# ─────────────────────────────────────────────────────────────────────────────
 LABEL_CLASS = {
-    "Grad-CAM":           ("Grad-CAM",          "label-gradcam"),
-    "Grad-CAM++":         ("Grad-CAM++",         "label-gradcampp"),
-    "Score-CAM":          ("Score-CAM",          "label-scorecam"),
-    "Guided Grad-CAM":    ("Guided Grad-CAM",    "label-guided"),
-    "Attention Rollout":  ("Attention Rollout",  "label-rollout"),
+    "Grad-CAM":                ("Grad-CAM",               "label-gradcam"),
+    "Grad-CAM++":              ("Grad-CAM++",              "label-gradcampp"),
+    "Score-CAM":               ("Score-CAM",               "label-scorecam"),
+    "Guided Grad-CAM":         ("Guided Grad-CAM",         "label-guided"),
+    "ViT Grad-CAM":            ("ViT Grad-CAM",            "label-vitgradcam"),
+    "Attention Rollout":       ("Attention Rollout",       "label-rollout"),
+    "Transformer Attribution": ("Transformer Attribution", "label-transattr"),
 }
+
 
 def render_heatmap_card(col, name: str, heat_map, base_rgb: np.ndarray):
     label_text, label_cls = LABEL_CLASS.get(name, (name, "label-input"))
     with col:
-        st.markdown(
-            f'<span class="heatmap-label {label_cls}">{label_text}</span>',
-            unsafe_allow_html=True,
-        )
-        if heat_map is None:
+        st.markdown(f'<span class="heatmap-label {label_cls}">{label_text}</span>',
+                    unsafe_allow_html=True)
+        if heat_map is None or np.all(heat_map == 0):
             st.markdown(
-                "<div style='background:#0d1017;border:1px dashed #1e2530;"
-                "height:224px;display:flex;align-items:center;justify-content:center;"
-                "color:#333;font-family:IBM Plex Mono,monospace;font-size:11px;"
-                "border-radius:4px;'>N/A — CNN only</div>",
-                unsafe_allow_html=True,
-            )
+                "<div style='background:#0d1017;border:1px dashed #1e2530;height:224px;"
+                "display:flex;align-items:center;justify-content:center;color:#ff5a5a;"
+                "font-family:IBM Plex Mono,monospace;font-size:11px;border-radius:4px;'>"
+                "Matrix Empty / Missing Weights</div>",
+                unsafe_allow_html=True)
         else:
-            colored  = jet_colormap(heat_map)
-            blended  = blend(base_rgb, colored, alpha=0.45)
-            st.image(blended, use_container_width=True)
+            st.image(blend(base_rgb, jet_colormap(heat_map), alpha=0.45),
+                     use_container_width=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SIDEBAR
-# ──────────────────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🔬 XAI Analyser")
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    st.markdown("<h1>🔬 XAI Heatmap Analyser</h1>", unsafe_allow_html=True)
     st.markdown("---")
 
-    st.markdown("### Model")
-    pth_path = st.text_input(
-        "PATH TO .pth FILE",
-        placeholder="/path/to/model.pth",
+    st.sidebar.markdown("<h2>⚙️ Configurations</h2>", unsafe_allow_html=True)
+
+    pth_file = st.sidebar.text_input(
+        "Weights path (.pth / .pt)",
+        value="model.pth",
+        help="Absolute or relative path to your PyTorch checkpoint."
     )
-    arch = st.selectbox(
-        "ARCHITECTURE",
-        [
-            "resnet50", "resnet18", "resnet34", "resnet101",
-            "densenet121", "densenet169",
-            "efficientnet_b0", "efficientnet_b3", "efficientnet_b4",
-            "mobilenet_v2", "mobilenet_v3_small",
-            "vgg16",
-            "vit_b_16", "vit_b_32", "vit_l_16",
-            "deit_s",
-        ],
-    )
-    num_classes = st.number_input("NUM CLASSES", min_value=2, max_value=21843, value=1000, step=1)
 
-    st.markdown("---")
-    st.markdown("### Image")
-    uploaded = st.file_uploader("UPLOAD IMAGE", type=["jpg", "jpeg", "png", "bmp", "tiff"])
+    arch_options = [
+        "resnet18", "resnet34", "resnet50", "resnet101",
+        "densenet121", "densenet169",
+        "efficientnet_b0", "efficientnet_b3", "efficientnet_b4",
+        "mobilenet_v2", "mobilenet_v3_small", "vgg16",
+        "vit_b_16", "vit_b_32", "vit_l_16", "deit_s"
+    ]
+    arch        = st.sidebar.selectbox("Model Architecture", options=arch_options, index=0)
+    num_classes = st.sidebar.number_input("Number of Classes", min_value=1, value=2, step=1)
 
-    st.markdown("---")
-    st.markdown("### Settings")
-    device_choice = st.selectbox("DEVICE", ["auto", "cpu", "cuda"])
-    discard_ratio = st.slider("ATTENTION DISCARD RATIO", 0.0, 0.99, 0.9, 0.01,
-                              help="ViT only — fraction of lowest attention weights zeroed")
-    score_cam_masks = st.slider("SCORE-CAM MAX MASKS", 8, 128, 32, 8,
-                                help="More masks = higher quality but slower")
+    labels_raw   = st.sidebar.text_input("Class Labels (comma separated)", value="Normal, AMD")
+    class_names  = [label.strip() for label in labels_raw.split(",")]
+    if len(class_names) < num_classes:
+        class_names += [f"Class_{i}" for i in range(len(class_names), num_classes)]
 
-    run_btn = st.button("▶  RUN ANALYSIS", use_container_width=True)
+    st.sidebar.markdown("<h3>🔍 XAI Hyperparameters</h3>", unsafe_allow_html=True)
+    discard_ratio   = st.sidebar.slider("Rollout Head Discard Ratio", 0.0, 0.95, 0.10, 0.05)
+    score_cam_masks = st.sidebar.slider("Score-CAM Max Masks", 8, 128, 32, 8)
 
-    st.markdown("---")
-    st.caption("XAI Heatmap Analyser · xAI project")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# MAIN AREA
-# ──────────────────────────────────────────────────────────────────────────────
-st.markdown("# XAI Heatmap Analyser")
-st.markdown(
-    "Visualise and compare **Grad-CAM · Grad-CAM++ · Score-CAM · "
-    "Guided Grad-CAM** (CNN) and **Attention Rollout** (ViT) on any "
-    "`.pth` checkpoint."
-)
-st.markdown("---")
-
-if not run_btn:
-    st.info("👈  Configure your model and upload an image in the sidebar, then click **RUN ANALYSIS**.")
-    st.stop()
-
-# ── validation ──
-if not pth_path or not Path(pth_path).is_file():
-    st.error("❌  `.pth` file not found. Check the path in the sidebar.")
-    st.stop()
-if uploaded is None:
-    st.error("❌  Please upload an image.")
-    st.stop()
-
-# ── device ──
-if device_choice == "auto":
     device = "cuda" if torch.cuda.is_available() else "cpu"
-else:
-    device = device_choice
+    st.sidebar.markdown(f"**Runtime Target:** `{device.upper()}`")
 
-# ── load image ──
-img_pil  = Image.open(io.BytesIO(uploaded.read())).convert("RGB")
-img_224  = img_pil.resize((224, 224))
-base_rgb = np.array(img_224)
+    # FIX 1: surface timm availability in UI for deit_s
+    if arch == "deit_s" and not TIMM_AVAILABLE:
+        st.error("DeiT-S requires timm>=1.0.0. Add it to requirements.txt and restart.")
+        return
 
-# ── load model ──
-with st.spinner("Loading model …"):
+    uploaded_file = st.file_uploader(
+        "Upload Image For Explainable Diagnosis...", type=["jpg", "jpeg", "png"]
+    )
+
+    if not Path(pth_file).exists():
+        st.info(f"💡 Awaiting valid weights file at: `{pth_file}`")
+        return
+
+    if uploaded_file is None:
+        st.info("💡 Drop an image above to compute spatial attributions.")
+        return
+
     try:
-        model, is_vit = load_model(pth_path, arch, int(num_classes), device)
+        # FIX 2: cache key includes arch+num_classes so stale cache never reused
+        model, is_vit = load_model(pth_file, arch, int(num_classes), device)
     except Exception as e:
-        st.error(f"❌  Model loading failed: {e}")
-        st.stop()
+        st.error(f"Failed to load model: {e}")
+        return
 
-# ── inference ──
-with st.spinner("Running inference …"):
-    x          = preprocess(img_pil, device)
+    arch_badge = (
+        '<span class="badge badge-vit">ViT Network Architecture</span>'
+        if is_vit else
+        '<span class="badge badge-cnn">CNN Backbone Network</span>'
+    )
+    st.markdown(f"**Architecture:** `{arch}` &nbsp;&nbsp; {arch_badge}", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    img_pil      = Image.open(uploaded_file)
+    base_rgb     = np.array(img_pil.convert("RGB").resize((224, 224)))
+    input_tensor = preprocess(img_pil, device)
+
+    # free any lingering tensors before inference
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
     with torch.no_grad():
-        logits     = model(x)
-        probs      = F.softmax(logits, dim=1)[0]
-        top5_vals, top5_idx = probs.topk(5)
-        pred_idx   = int(top5_idx[0])
-        pred_conf  = float(top5_vals[0]) * 100
+        logits       = model(input_tensor)
+        probs        = F.softmax(logits, dim=1)[0].cpu().numpy()
+        pred_idx     = int(np.argmax(probs))
+        logit_margin = logits[0].max().item()
+    del logits
 
-labels     = load_imagenet_labels()
-pred_label = labels.get(pred_idx, f"Class {pred_idx}")
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("Predicted Class", f"#{pred_idx} : {class_names[pred_idx]}")
+    with m2:
+        st.metric("Confidence", f"{probs[pred_idx] * 100:.2f}%")
+    with m3:
+        st.metric("Logit Margin (Δ)", f"{logit_margin:.3f}")
 
-# ── xai ──
-with st.spinner("Computing heatmaps … (Score-CAM may take ~10s)"):
-    xai_results = run_xai(model, x, pred_idx, is_vit, device)
+    st.markdown("**Probability Distribution**")
+    for idx, (p_val, label_name) in enumerate(zip(probs, class_names)):
+        st.markdown(
+            f"<div style='font-size:11px;font-family:IBM Plex Mono;margin-bottom:2px;'>"
+            f"{label_name}: {p_val*100:.1f}%</div>"
+            f"<div class='conf-bar-wrap'><div class='conf-bar-fill' style='width:{p_val*100}%;'></div></div>",
+            unsafe_allow_html=True
+        )
+    st.markdown("<br><hr>", unsafe_allow_html=True)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# RESULTS LAYOUT
-# ──────────────────────────────────────────────────────────────────────────────
-
-arch_type = "ViT" if is_vit else "CNN"
-badge_arch  = f'<span class="badge badge-vit">{arch_type}</span>'
-badge_dev   = f'<span class="badge badge-{"gpu" if device=="cuda" else "cpu"}">{device.upper()}</span>'
-
-# ── Row 1: model info + top-5 ──
-st.markdown("## Model & Prediction")
-r1c1, r1c2, r1c3, r1c4 = st.columns([2, 2, 2, 3])
-r1c1.metric("Architecture", arch.upper())
-r1c2.metric("Type", arch_type)
-r1c3.metric("Device", device.upper())
-r1c4.metric("Top-1 Prediction", pred_label, f"{pred_conf:.1f}% confidence")
-
-st.markdown("---")
-
-# ── Row 2: confidence bar + top-5 table ──
-st.markdown("## Classification Output")
-cb1, cb2 = st.columns([3, 2])
-
-with cb1:
-    st.markdown(f"**Top-1:** `{pred_label}`")
-    bar_w = int(pred_conf)
-    st.markdown(
-        f'<div class="conf-bar-wrap"><div class="conf-bar-fill" style="width:{bar_w}%"></div></div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(f"<small style='color:#5a9fd4;font-family:IBM Plex Mono,monospace'>"
-                f"{pred_conf:.2f}% confidence</small>", unsafe_allow_html=True)
-
-with cb2:
-    st.markdown("**Top-5 Predictions**")
-    rows = []
-    for v, i in zip(top5_vals, top5_idx):
-        lbl = labels.get(int(i), f"Class {int(i)}")
-        rows.append({"Class": lbl, "Confidence": f"{float(v)*100:.2f}%"})
-    import pandas as pd
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-st.markdown("---")
-
-# ── Row 3: input + heatmaps ──
-st.markdown("## Heatmap Comparison")
-
-if is_vit:
-    st.markdown(
-        f'{badge_arch} ViT detected — Grad-CAM variants are **not applicable**. '
-        f'Showing **Attention Rollout** only.',
-        unsafe_allow_html=True,
-    )
-else:
-    st.markdown(
-        f'{badge_arch} CNN detected — showing all four Grad-CAM variants.',
-        unsafe_allow_html=True,
+    target_explain_class = st.selectbox(
+        "Target class for feature maps:",
+        options=list(range(num_classes)),
+        index=pred_idx,
+        format_func=lambda i: f"Class {i}: {class_names[i]} {'(Predicted)' if i == pred_idx else ''}"
     )
 
-st.markdown("")
+    st.markdown("### \u23f3 Computing Attribution Maps")
+    _status = st.empty()
+    xai_maps = run_xai(
+        model=model,
+        x=input_tensor,
+        class_idx=target_explain_class,
+        is_vit=is_vit,
+        arch=arch,
+        device=device,
+        discard_ratio=discard_ratio,
+        score_cam_masks=score_cam_masks,
+        status_box=_status,
+    )
+    _status.empty()
 
-# 5 columns: input | GC | GC++ | ScoreCAM | GuidedGC / Rollout
-col_in, col1, col2, col3, col4 = st.columns(5)
+    st.markdown("## 📊 Interpretability Attribution Heatmaps")
 
-# Input image card
-with col_in:
-    st.markdown('<span class="heatmap-label label-input">Input Image</span>', unsafe_allow_html=True)
-    st.image(base_rgb, use_container_width=True)
+    if not is_vit:
+        row1 = st.columns(3)
+        with row1[0]:
+            st.markdown('<span class="heatmap-label label-input">Input Specimen</span>',
+                        unsafe_allow_html=True)
+            st.image(base_rgb, use_container_width=True)
+        render_heatmap_card(row1[1], "Grad-CAM++", xai_maps.get("Grad-CAM++"), base_rgb)
+        render_heatmap_card(row1[2], "Score-CAM",  xai_maps.get("Score-CAM"),  base_rgb)
+    else:
+        row1 = st.columns(2)
+        with row1[0]:
+            st.markdown('<span class="heatmap-label label-input">Input Specimen</span>',
+                        unsafe_allow_html=True)
+            st.image(base_rgb, use_container_width=True)
+        render_heatmap_card(row1[1], "Attention Rollout", xai_maps.get("Attention Rollout"), base_rgb)
 
-if is_vit:
-    render_heatmap_card(col1, "Grad-CAM",        None, base_rgb)
-    render_heatmap_card(col2, "Grad-CAM++",      None, base_rgb)
-    render_heatmap_card(col3, "Score-CAM",       None, base_rgb)
-    render_heatmap_card(col4, "Attention Rollout",
-                        xai_results.get("Attention Rollout"), base_rgb)
-else:
-    render_heatmap_card(col1, "Grad-CAM",        xai_results.get("Grad-CAM"),        base_rgb)
-    render_heatmap_card(col2, "Grad-CAM++",      xai_results.get("Grad-CAM++"),      base_rgb)
-    render_heatmap_card(col3, "Score-CAM",       xai_results.get("Score-CAM"),       base_rgb)
-    render_heatmap_card(col4, "Guided Grad-CAM", xai_results.get("Guided Grad-CAM"), base_rgb)
 
-st.markdown("---")
-
-# ── Row 4: method descriptions ──
-with st.expander("📖  What does each method show?"):
-    st.markdown("""
-| Method | What it highlights | Best for |
-|---|---|---|
-| **Grad-CAM** | Class-discriminative regions using gradients of the last conv layer | Quick overview, coarse localisation |
-| **Grad-CAM++** | Weighted positive gradients — handles multiple object instances better | Multi-object scenes |
-| **Score-CAM** | Mask-based — no gradients needed, more stable | Noisy gradient scenarios |
-| **Guided Grad-CAM** | Fine-grained pixel-level detail fused with Grad-CAM | Texture / edge attribution |
-| **Attention Rollout** | Propagated self-attention across all ViT layers | ViT models only |
-""")
+if __name__ == "__main__":
+    main()
