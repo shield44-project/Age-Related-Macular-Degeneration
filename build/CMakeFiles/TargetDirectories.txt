@@ -1,9 +1,0 @@
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/AMD_GUI.dir
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/edit_cache.dir
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/rebuild_cache.dir
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/list_install_components.dir
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/install.dir
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/install/local.dir
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/install/strip.dir
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/AMD_GUI_autogen_timestamp_deps.dir
-/home/shield44/Documents/projects/Age-Related-Macular-Degeneration/build/CMakeFiles/AMD_GUI_autogen.dir
