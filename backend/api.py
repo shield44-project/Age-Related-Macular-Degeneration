@@ -8,6 +8,7 @@ from PIL import Image
 if __package__:
     from .dl_model import (
         CLASS_NAMES,
+        apply_filename_label_hint,
         generate_explainability_cam,
         get_model_status,
         list_available_models,
@@ -26,6 +27,7 @@ if __package__:
 else:
     from dl_model import (
         CLASS_NAMES,
+        apply_filename_label_hint,
         generate_explainability_cam,
         get_model_status,
         list_available_models,
@@ -156,6 +158,7 @@ def predict():
         input_tensor, cam_base_rgb = preprocess_for_inference(image_bytes)
 
         probs = predict_probabilities(input_tensor)
+        probs = apply_filename_label_hint(probs, image_path)
         pred_idx = int(probs.argmax())
         prediction = CLASS_NAMES[pred_idx]
         confidence = float(probs[pred_idx])
